@@ -29,3 +29,6 @@ database.sqlite
 
 # Local copy of docker-compose.example.yml
 docker-compose.yml
+
+# Vercel
+.vercel
