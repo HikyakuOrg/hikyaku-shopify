@@ -1,0 +1,31 @@
+# Example self-hosted production setup: the app image built by
+# .github/workflows/docker.yml, plus a Cloudflare Tunnel that exposes it at
+# https://shopify.hikyaku.org without opening any inbound firewall ports.
+#
+# 1. Copy this file to docker-compose.yml and .env.example to .env.production,
+#    then fill in .env.production.
+# 2. In Cloudflare Zero Trust -> Networks -> Tunnels, create a tunnel, put its
+#    token in CLOUDFLARE_TUNNEL_TOKEN, and add a public hostname:
+#    shopify.hikyaku.org -> http://app:3000
+# 3. If the GHCR package is private: docker login ghcr.io
+# 4. docker compose --env-file .env.production up -d
+#
+# Update: docker compose --env-file .env.production pull && docker compose --env-file .env.production up -d
+services:
+  app:
+    image: ghcr.io/<github-owner>/hikyaku-shopify:latest
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      SHOPIFY_APP_URL: https://shopify.hikyaku.org
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env.production}
+    depends_on:
+      - app

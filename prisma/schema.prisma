@@ -1,0 +1,74 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Lives in its own "shopify" schema in the shared Hikyaku Supabase Postgres
+// instance, so it can never collide with hikyaku-api's tables. DATABASE_URL
+// must use Supabase's direct connection (port 5432), not the 6543 transaction
+// pooler — DDL and advisory locks (both used by `prisma migrate`) are
+// unreliable under transaction pooling. See .env.example.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["shopify"]
+}
+
+// Required by PrismaSessionStorage (app/shopify.server.ts) — one row per
+// Shopify OAuth session (offline token per shop).
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@schema("shopify")
+}
+
+// One row per installed shop that has completed the Hikyaku OAuth connect
+// flow. Tokens live in Supabase Vault (vault.secrets, encrypted by Postgres
+// itself) — these columns hold only the vault secret UUIDs, never raw
+// Hikyaku tokens. See app/lib/vault.server.ts.
+model HikyakuConnection {
+  shop                 String   @id
+  hikyakuUserId         String
+  hikyakuEmail          String
+  organisationId        String?
+  organisationSlug      String?
+  organisationName      String?
+  accessTokenSecretId   String   @db.Uuid
+  refreshTokenSecretId  String   @db.Uuid
+  expiresAt             DateTime
+  scope                 String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@schema("shopify")
+}
+
+// Short-lived PKCE state for an in-flight Hikyaku OAuth attempt. One row per
+// "Connect Hikyaku" click; deleted the moment the callback consumes it, and
+// rejected outright if older than 10 minutes (see hikyaku-oauth.server.ts).
+model HikyakuOAuthState {
+  state        String   @id
+  shop         String
+  codeVerifier String
+  createdAt    DateTime @default(now())
+
+  @@schema("shopify")
+}

@@ -1,0 +1,58 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "8d7950a909d34512d2c0fb6517449caa"
+application_url = "https://shopify.hikyaku.org"
+embedded = true
+name = "Hikyaku Connect"
+
+[access_scopes]
+# read_orders is the only scope this app needs — it makes no other Admin API
+# calls. Level 2 protected customer data (name/address/phone/email on the
+# orders/paid payload) requires approval in the Dev Dashboard before this app
+# can be published; development stores work without approval.
+scopes = "read_orders"
+use_legacy_install_flow = false
+
+[webhooks]
+# Latest STABLE version as of writing. Shopify releases a new version every
+# quarter; 2026-10 (the CLI's scaffold default) doesn't go live until
+# October 1, 2026 — see https://shopify.dev/docs/api/usage/versioning.
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  # The core integration: a paid order is a completed purchase. See
+  # docs/BACKEND_HANDOFF.md for the payload this fans out to Hikyaku's API.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/paid"
+  topics = [ "orders/paid" ]
+  name = "hikyaku-order-paid"
+
+  # Mandatory for any published app — see
+  # https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance.
+  # This app persists no customer data itself (see docs/BACKEND_HANDOFF.md),
+  # so the handler is a no-op 200; Hikyaku's own backend holds the order data
+  # and must handle actual redaction.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+[auth]
+redirect_urls = [
+  "https://shopify.hikyaku.org/auth/callback",
+  "https://shopify.hikyaku.org/auth/shopify/callback",
+  "https://shopify.hikyaku.org/api/auth/callback"
+]
+
+[build]
+include_config_on_deploy = true
+# false so `shopify app dev` doesn't overwrite the production URLs above with
+# a tunnel URL. For local dev, link a separate dev app instead:
+# `shopify app config link` -> shopify.app.dev.toml, then `shopify app config use dev`.
+automatically_update_urls_on_dev = false
