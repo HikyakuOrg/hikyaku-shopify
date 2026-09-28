@@ -1,49 +1,16 @@
-import { AppProvider } from "@shopify/shopify-app-react-router/react";
-import { useState } from "react";
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
+import { redirect } from "react-router";
 
+import { MARKETING_URL } from "../../lib/marketing";
 import { login } from "../../shopify.server";
-import { loginErrorMessage } from "./error.server";
 
+// A valid `?shop=` starts an install: login() throws a redirect to the shop's
+// admin. Hikyaku's Connected Apps sends merchants here that way. Anything else
+// (no shop, an invalid one, or authenticate.admin bouncing a request made
+// outside the admin) goes to Hikyaku's page about the app: the template's
+// shop-domain form is gone, since App Store requirement 2.3.1 forbids asking
+// for the shop domain.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const errors = loginErrorMessage(await login(request));
-
-  return { errors };
+  await login(request);
+  throw redirect(MARKETING_URL);
 };
-
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const errors = loginErrorMessage(await login(request));
-
-  return {
-    errors,
-  };
-};
-
-export default function Auth() {
-  const loaderData = useLoaderData<typeof loader>();
-  const actionData = useActionData<typeof action>();
-  const [shop, setShop] = useState("");
-  const { errors } = actionData || loaderData;
-
-  return (
-    <AppProvider embedded={false}>
-      <s-page>
-        <Form method="post">
-          <s-section heading="Log in">
-            <s-text-field
-              name="shop"
-              label="Shop domain"
-              details="example.myshopify.com"
-              value={shop}
-              onChange={(e) => setShop(e.currentTarget.value)}
-              autocomplete="on"
-              error={errors.shop}
-            ></s-text-field>
-            <s-button type="submit">Log in</s-button>
-          </s-section>
-        </Form>
-      </s-page>
-    </AppProvider>
-  );
-}
