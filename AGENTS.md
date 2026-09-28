@@ -31,7 +31,7 @@ All in `app/lib/hikyaku-api.server.ts`, with the shop's Hikyaku bearer token and
 | Call | Function | Used by |
 | --- | --- | --- |
 | `GET /api/v1/organisations/me` | `fetchOrganisations` | Home, picking the organisation |
-| `POST /api/v1/integrations/orders` | `postOrderEvent` | `orders/paid` webhook |
+| `POST /api/v1/integrations/orders` | `postOrderEvent` | `orders/paid` (`order.paid`) and `fulfillment_orders/*` (`order.fulfillment_updated`) webhooks |
 | `GET /api/v1/warehouses` | `fetchWarehouses` | Locations (pickers, suggestions) |
 | `GET /api/v1/integrations/locations` | `fetchIntegrationLocations` | Home (unmapped banner) |
 | `PUT /api/v1/integrations/locations` | `upsertIntegrationLocations` | Locations (sync on load, Save), `locations/*` webhooks |
@@ -47,6 +47,8 @@ All in `app/lib/hikyaku-api.server.ts`, with the shop's Hikyaku bearer token and
 - `OPEN`, `IN_PROGRESS` and `ON_HOLD` become groups. `CLOSED`, `CANCELLED`, `INCOMPLETE` and `SCHEDULED` (a later delivery, such as a prepaid subscription's next box) are left out; if nothing is left, the order isn't sent (200).
 - Line items the payload doesn't list are left out of the groups and logged, since the API rejects the whole event otherwise.
 
+**Re-routing after payment.** `app/routes/webhooks.fulfillment_orders.tsx` handles `fulfillment_orders/moved`, `split`, `merged`, `cancelled` and `scheduled_fulfillment_order_ready`. The payloads only name fulfillment orders, so the pure `app/lib/fulfillment-order-webhook.ts` picks out the ones to look the order up through (`getFulfillmentOrderOrder`, trying the next if one is gone) and the ones the change released items from (the one moved out of, split, merged or cancelled; none for scheduled-ready). The handler then sends an `order.fulfillment_updated` event: `order` `{ id, name }` only, the order's current groups from `buildFulfillmentGroups` (all of them, not just the changed ones, and sent even when empty) and `released_group_ids`. Hikyaku takes the recipient and line items from the order.paid it already has, replaces a package whose group now ships from another warehouse or weighs something else, drops the package of a released group that's no longer listed, and makes packages for new groups; a change that touches a package already loaded needs attention instead. A group that's simply gone without being released (fulfilled) keeps its package. Same 1 s Admin budget and retry contract as `orders/paid`. Known gap: an order whose every fulfillment order was `SCHEDULED` at payment never reached Hikyaku, so its scheduled-ready update is skipped there.
+
 ## Admin API usage
 
 The app makes a small, fixed set of read-only Admin GraphQL queries, all in `app/lib/shopify-admin.server.ts`. Get a client with `adminForRequest(request)` (embedded admin loaders/actions, via `authenticate.admin`) or `adminForShop(shop)` (webhook handlers and other work with no admin session, via `unauthenticated.admin` and the shop's offline session). Adding a query means adding its scope to `shopify.app.toml` and a line here.
@@ -55,7 +57,8 @@ The app makes a small, fixed set of read-only Admin GraphQL queries, all in `app
 | --- | --- | --- | --- |
 | `locations` (inactive included): id, name, isActive, fulfillsOnlineOrders, address incl. countryCode/latitude/longitude | `listLocations` | `read_locations` | Multi-location stores: the merchant maps each Shopify location to a Hikyaku warehouse (Locations screen, and the Home banner's count). |
 | `order.fulfillmentOrders`: id, status, assigned location, delivery method type, line items (ids, quantities, unit weight) | `getOrderFulfillmentOrders` | `read_orders`, `read_merchant_managed_fulfillment_orders` | Which location ships which line items, so a paid order is dispatched per location (`orders/paid` webhook). |
-| `fulfillmentOrder.lineItems` | (internal to `getOrderFulfillmentOrders`) | `read_merchant_managed_fulfillment_orders` | Follow-up page for the rare fulfillment order with more than 40 line items. |
+| `fulfillmentOrder.order`: id, name, and its `fulfillmentOrders` (same fields as above) | `getFulfillmentOrderOrder` | `read_orders`, `read_merchant_managed_fulfillment_orders` | The `fulfillment_orders/*` webhooks name fulfillment orders, not the order: finds the order and its routing now in one query (`fulfillment_orders/*` webhooks). |
+| `fulfillmentOrder.lineItems` | (internal to both of the above) | `read_merchant_managed_fulfillment_orders` | Follow-up page for the rare fulfillment order with more than 40 line items. |
 
 No REST calls and no mutations. Fulfillment order queries deliberately skip `destination`: the delivery address already arrives in `orders/paid`.
 
@@ -69,9 +72,9 @@ Webhooks are declarative in `shopify.app.toml` (`[[webhooks.subscriptions]]`), s
 | --- | --- | --- |
 | `webhooks.orders.paid.tsx` | `orders/paid` | Forwards the order to `hikyaku-api` with its fulfillment groups (see Order flow). |
 | `webhooks.locations.tsx` | `locations/create`, `locations/update`, `locations/activate`, `locations/deactivate` | Upserts the location's name and country from the payload to `PUT /api/v1/integrations/locations` without `mode`, so a new location lands `unmapped` and an existing one keeps its mapping. Skips (200) shops not connected to Hikyaku. Same retry contract as `orders/paid`: 5xx, network error or the 4 s timeout returns 500, 4xx returns 200. A 403 (the connected account lacks `integrations.locations.write`) is logged and dropped: the Home banner still counts the location from Shopify's live list, and Locations syncs everything once the account has the permission. |
-| `webhooks.fulfillment_orders.tsx` | `fulfillment_orders/moved`, `fulfillment_orders/split`, `fulfillment_orders/merged`, `fulfillment_orders/cancelled` | Verifies HMAC and logs. Will forward re-routing events to `hikyaku-api` once it can handle them. |
+| `webhooks.fulfillment_orders.tsx` | `fulfillment_orders/moved`, `fulfillment_orders/split`, `fulfillment_orders/merged`, `fulfillment_orders/cancelled`, `fulfillment_orders/scheduled_fulfillment_order_ready` | Sends the order's current routing as `order.fulfillment_updated` (see Re-routing after payment). Skips (200) shops not connected to Hikyaku. |
 | `webhooks.app.uninstalled.tsx`, `webhooks.app.scopes_update.tsx`, `webhooks.compliance.tsx` | App lifecycle and mandatory compliance topics | Session bookkeeping; compliance is a no-op 200. |
 
 ## Tests
 
-`pnpm test` runs Vitest over `app/**/*.test.ts` (config in `vitest.config.ts`, kept apart from `vite.config.ts` so tests skip the React Router plugin). Tests cover pure modules such as `app/lib/location-mapping.ts` and `app/lib/fulfillment-groups.ts`. Route tests live in `app/tests/` (anything under `app/routes/` becomes a route) and mock `shopify.server`, `hikyaku-api.server` and `shopify-admin.server`; so far only `orders/paid` has one.
+`pnpm test` runs Vitest over `app/**/*.test.ts` (config in `vitest.config.ts`, kept apart from `vite.config.ts` so tests skip the React Router plugin). Tests cover pure modules such as `app/lib/location-mapping.ts`, `app/lib/fulfillment-groups.ts` and `app/lib/fulfillment-order-webhook.ts`. Route tests live in `app/tests/` (anything under `app/routes/` becomes a route) and mock `shopify.server`, `hikyaku-api.server` and `shopify-admin.server`; so far `orders/paid` and `fulfillment_orders/*` have one.

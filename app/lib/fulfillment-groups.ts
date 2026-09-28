@@ -97,17 +97,19 @@ export function legacyId(gid: string): string {
  *
  * @param orderLineItemIds The `order.line_items[].id` values of the event.
  * Line items outside it are left out of the groups (and reported), since the
- * API rejects a group naming a line item the order doesn't have.
+ * API rejects a group naming a line item the order doesn't have. Null for an
+ * event that carries no line items (order.fulfillment_updated), which keeps
+ * every line item.
  */
 export function buildFulfillmentGroups(
   fulfillmentOrders: ShopifyFulfillmentOrder[],
-  orderLineItemIds: Iterable<string>,
+  orderLineItemIds: Iterable<string> | null,
 ): FulfillmentGroupsResult {
   if (fulfillmentOrders.length === 0) {
     return { ok: false, reason: "the order has no fulfillment orders yet" };
   }
 
-  const known = new Set(orderLineItemIds);
+  const known = orderLineItemIds ? new Set(orderLineItemIds) : null;
   const groups: OrderFulfillmentGroup[] = [];
   const skipped: Array<{ id: string; status: string }> = [];
   const unknownLineItemIds = new Set<string>();
@@ -138,7 +140,7 @@ export function buildFulfillmentGroups(
       const quantity = item.remainingQuantity;
       if (quantity < 1) continue;
       const lineItemId = legacyId(item.lineItem.id);
-      if (!known.has(lineItemId)) {
+      if (known && !known.has(lineItemId)) {
         unknownLineItemIds.add(lineItemId);
         continue;
       }

@@ -6,7 +6,7 @@ import {
   upsertSecret,
 } from "./vault.server";
 import { refreshTokens, type HikyakuTokens } from "./hikyaku-oauth.server";
-import type { OrderPaidEvent } from "./order-event.server";
+import type { OrderEvent } from "./order-event.server";
 import type {
   HikyakuWarehouse,
   IntegrationLocation,
@@ -146,7 +146,8 @@ export type OrderEventResult =
   { ok: true } | { ok: false; retry: boolean; detail: string };
 
 /**
- * POSTs a paid-order event to Hikyaku's backend. The response mapping here
+ * POSTs an order event (order.paid, order.fulfillment_updated) to Hikyaku's
+ * backend. Its event id is the Idempotency-Key. The response mapping here
  * is the reliability contract with Shopify's webhook retrier — see
  * docs/BACKEND_HANDOFF.md:
  *   2xx / 409 (already processed) -> ok            (200 back to Shopify)
@@ -156,7 +157,7 @@ export type OrderEventResult =
 export async function postOrderEvent(
   accessToken: string,
   organisationSlug: string,
-  event: OrderPaidEvent,
+  event: OrderEvent,
 ): Promise<OrderEventResult> {
   try {
     const response = await fetch(

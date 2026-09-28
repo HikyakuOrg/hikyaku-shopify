@@ -97,7 +97,7 @@ function callAction() {
 
 function postedEvent(): OrderPaidEvent {
   expect(postOrderEvent).toHaveBeenCalledTimes(1);
-  return vi.mocked(postOrderEvent).mock.calls[0][2];
+  return vi.mocked(postOrderEvent).mock.calls[0][2] as OrderPaidEvent;
 }
 
 beforeEach(() => {

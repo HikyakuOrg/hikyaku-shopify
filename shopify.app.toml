@@ -50,7 +50,8 @@ api_version = "2026-07"
     "locations/deactivate",
   ]
 
-  # Items of a paid order re-routed to another location after orders/paid.
+  # Items of a paid order re-routed to another location after orders/paid,
+  # or a scheduled delivery (a prepaid subscription's next box) coming due.
   [[webhooks.subscriptions]]
   uri = "/webhooks/fulfillment_orders"
   topics = [
@@ -58,6 +59,7 @@ api_version = "2026-07"
     "fulfillment_orders/split",
     "fulfillment_orders/merged",
     "fulfillment_orders/cancelled",
+    "fulfillment_orders/scheduled_fulfillment_order_ready",
   ]
 
   # Mandatory for any published app — see
