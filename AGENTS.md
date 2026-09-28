@@ -24,6 +24,10 @@ Embedded admin routes under `app/routes/app.*`, built with Polaris web component
 
 **Read-only.** The sync needs `integrations.locations.write`; reading warehouses and mappings only needs `warehouse.view`. The API can't report the caller's permissions, so the sync doubles as the check: when it returns 403, Locations reads `GET /api/v1/integrations/locations` instead and shows the same rows with the pickers and Save disabled and a "View only" banner naming the connected account. The Home banner only reads, so it works for these accounts too.
 
+## Outside the admin
+
+The Shopify admin always opens the app URL with a `shop` param. Without one, `/` (`app/routes/_index/route.tsx`) redirects to Hikyaku's page about the app, `MARKETING_URL` in `app/lib/marketing.ts` (`https://www.hikyaku.org/plugins/shopify`, a Payload page in `hikyaku-landing`). So does `/auth/login`, unless `login()` redirects to an install, which a valid `?shop=` does: that's how Hikyaku's Connected Apps starts one. The template's shop-domain form is gone and shouldn't come back: App Store requirement 2.3.1 forbids asking for the shop domain.
+
 ## Hikyaku API usage
 
 All in `app/lib/hikyaku-api.server.ts`, with the shop's Hikyaku bearer token and `X-Organisation-Slug`. Location calls send `platform: "shopify"` and the shop's myshopify domain as `shop_domain`.
@@ -77,4 +81,4 @@ Webhooks are declarative in `shopify.app.toml` (`[[webhooks.subscriptions]]`), s
 
 ## Tests
 
-`pnpm test` runs Vitest over `app/**/*.test.ts` (config in `vitest.config.ts`, kept apart from `vite.config.ts` so tests skip the React Router plugin). Tests cover pure modules such as `app/lib/location-mapping.ts`, `app/lib/fulfillment-groups.ts` and `app/lib/fulfillment-order-webhook.ts`. Route tests live in `app/tests/` (anything under `app/routes/` becomes a route) and mock `shopify.server`, `hikyaku-api.server` and `shopify-admin.server`; so far `orders/paid` and `fulfillment_orders/*` have one, and `app/tests/vault-session-storage.test.ts` covers the session store over an in-memory table and Vault.
+`pnpm test` runs Vitest over `app/**/*.test.ts` (config in `vitest.config.ts`, kept apart from `vite.config.ts` so tests skip the React Router plugin). Tests cover pure modules such as `app/lib/location-mapping.ts`, `app/lib/fulfillment-groups.ts` and `app/lib/fulfillment-order-webhook.ts`. Route tests live in `app/tests/` (anything under `app/routes/` becomes a route) and mock `shopify.server`, `hikyaku-api.server` and `shopify-admin.server`; so far `orders/paid` and `fulfillment_orders/*` have one, `app/tests/marketing-redirects.test.ts` covers `/` and `/auth/login` (see Outside the admin), and `app/tests/vault-session-storage.test.ts` covers the session store over an in-memory table and Vault.
