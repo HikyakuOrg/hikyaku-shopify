@@ -14,6 +14,11 @@ generator client {
 // direct connection (port 5432), used only by `prisma migrate` — DDL and
 // advisory locks are unreliable under transaction pooling. Self-hosted, both
 // can be the direct URL. See .env.example.
+//
+// DATABASE_URL connects as the hikyaku_shopify role, which can only read and
+// write tables in this schema (new tables are granted automatically) and
+// reach Vault through the shopify.*_secret wrappers. See the
+// least_privilege_role migration.
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")

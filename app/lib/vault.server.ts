@@ -5,10 +5,10 @@ import prisma from "../db.server";
 // ciphertext — HikyakuConnection only ever holds the vault secret UUIDs.
 // See https://supabase.com/docs/guides/database/vault.
 //
-// Requires the `supabase_vault` extension enabled on this Postgres instance
-// (on by default for Supabase projects) and a DATABASE_URL role with EXECUTE
-// on vault.create_secret/update_secret and SELECT on vault.decrypted_secrets
-// — true of Supabase's default `postgres` role used for direct connections.
+// The runtime role (hikyaku_shopify) has no access to the vault schema. It
+// goes through the SECURITY DEFINER wrappers in the shopify schema (see the
+// least_privilege_role migration), which tag the app's secrets with the
+// description 'hikyaku-shopify' and only touch tagged secrets.
 //
 // Secrets are created without a `name` (left null) so re-encrypting a token
 // never collides with vault.secrets' unique-name constraint — the UUID
@@ -19,12 +19,12 @@ interface SecretIdRow {
 }
 
 interface DecryptedSecretRow {
-  decrypted_secret: string;
+  decrypted_secret: string | null;
 }
 
 export async function createSecret(plaintext: string): Promise<string> {
   const [row] = await prisma.$queryRaw<SecretIdRow[]>`
-    select vault.create_secret(${plaintext}) as id
+    select shopify.create_secret(${plaintext}) as id
   `;
   return row.id;
 }
@@ -34,21 +34,21 @@ export async function updateSecret(
   plaintext: string,
 ): Promise<void> {
   await prisma.$executeRaw`
-    select vault.update_secret(${id}::uuid, ${plaintext})
+    select shopify.update_secret(${id}::uuid, ${plaintext})
   `;
 }
 
 export async function readSecret(id: string): Promise<string> {
   const [row] = await prisma.$queryRaw<DecryptedSecretRow[]>`
-    select decrypted_secret from vault.decrypted_secrets where id = ${id}::uuid
+    select shopify.read_secret(${id}::uuid) as decrypted_secret
   `;
-  if (!row) throw new Error(`Vault secret ${id} not found`);
+  if (!row?.decrypted_secret) throw new Error(`Vault secret ${id} not found`);
   return row.decrypted_secret;
 }
 
 export async function deleteSecret(id: string): Promise<void> {
   await prisma.$executeRaw`
-    delete from vault.secrets where id = ${id}::uuid
+    select shopify.delete_secret(${id}::uuid)
   `;
 }
 
