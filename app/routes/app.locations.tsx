@@ -9,6 +9,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
+  fetchIntegrationLocations,
   fetchWarehouses,
   getConnection,
   getValidAccessToken,
@@ -50,7 +51,11 @@ async function hikyakuFor(shop: string) {
   if (!connection?.organisationSlug) return null;
   const accessToken = await getValidAccessToken(shop);
   if (!accessToken) return null;
-  return { accessToken, organisationSlug: connection.organisationSlug };
+  return {
+    accessToken,
+    organisationSlug: connection.organisationSlug,
+    email: connection.hikyakuEmail,
+  };
 }
 
 function describeFailure(
@@ -130,6 +135,7 @@ function buildRow(
 // Every load re-lists the shop's locations and upserts them without a mode:
 // new locations arrive `unmapped`, renamed ones get their new name, the
 // merchant's choices stay, and locations gone from Shopify are marked stale.
+// An account that can't write gets the same screen read-only (syncOrRead).
 export async function loader({
   request,
 }: LoaderFunctionArgs): Promise<LoaderData> {
@@ -164,21 +170,17 @@ export async function loader({
   }
   const warehouses = warehousesResult.data;
 
-  const synced = await upsertIntegrationLocations(
+  const stored = await syncOrRead(
     accessToken,
     organisationSlug,
     shop,
-    locations.map(syncInput),
-    { markMissingStale: true },
+    locations,
   );
-  if (!synced.ok) {
-    return {
-      status: "error",
-      message: describeFailure(synced, "update this store's locations"),
-    };
+  if (!stored.ok) {
+    return { status: "error", message: stored.message };
   }
   const saved = new Map(
-    synced.data.map((row) => [row.external_location_id, row] as const),
+    stored.rows.map((row) => [row.external_location_id, row] as const),
   );
 
   const rows: LocationRow[] = [];
@@ -196,7 +198,53 @@ export async function loader({
     rows,
     otherRows,
     warehouses: warehouses.map(({ id, name }) => ({ id, name })),
+    readOnly: stored.readOnly ? { email: hikyaku.email } : null,
   };
+}
+
+type StoredLocations =
+  | { ok: true; rows: IntegrationLocation[]; readOnly: boolean }
+  | { ok: false; message: string };
+
+// Syncing needs integrations.locations.write, reading only warehouse.view. The
+// API has no way to ask which permissions the caller holds, so the sync itself
+// is the check: a 403 means the account can't write, and the screen falls back
+// to reading what Hikyaku has stored, read-only. The warehouses call has
+// already passed the membership and trial checks, so a 403 here can only be
+// the missing write permission. The refused PUT writes nothing.
+async function syncOrRead(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+  locations: ShopifyLocation[],
+): Promise<StoredLocations> {
+  const synced = await upsertIntegrationLocations(
+    accessToken,
+    organisationSlug,
+    shop,
+    locations.map(syncInput),
+    { markMissingStale: true },
+  );
+  if (synced.ok) return { ok: true, rows: synced.data, readOnly: false };
+  if (synced.status !== 403) {
+    return {
+      ok: false,
+      message: describeFailure(synced, "update this store's locations"),
+    };
+  }
+
+  const read = await fetchIntegrationLocations(
+    accessToken,
+    organisationSlug,
+    shop,
+  );
+  if (!read.ok) {
+    return {
+      ok: false,
+      message: describeFailure(read, "read this store's locations"),
+    };
+  }
+  return { ok: true, rows: read.data, readOnly: true };
 }
 
 // Sends only the locations whose picker differs from what Hikyaku has saved,

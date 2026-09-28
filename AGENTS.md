@@ -22,6 +22,8 @@ Embedded admin routes under `app/routes/app.*`, built with Polaris web component
 
 **Sync.** Every load of Locations re-lists the shop's locations from the Admin API and upserts them all without `mode` and with `mark_missing_stale: true`: new ones arrive `unmapped`, names and countries refresh, mappings stay, and locations gone from Shopify are marked stale in Hikyaku. Save sends only the locations whose picker changed, with an explicit `mode`. The `locations/*` webhooks upsert the one location the same way (no `mode`, no `mark_missing_stale`).
 
+**Read-only.** The sync needs `integrations.locations.write`; reading warehouses and mappings only needs `warehouse.view`. The API can't report the caller's permissions, so the sync doubles as the check: when it returns 403, Locations reads `GET /api/v1/integrations/locations` instead and shows the same rows with the pickers and Save disabled and a "View only" banner naming the connected account. The Home banner only reads, so it works for these accounts too.
+
 ## Hikyaku API usage
 
 All in `app/lib/hikyaku-api.server.ts`, with the shop's Hikyaku bearer token and `X-Organisation-Slug`. Location calls send `platform: "shopify"` and the shop's myshopify domain as `shop_domain`.
@@ -59,7 +61,7 @@ Webhooks are declarative in `shopify.app.toml` (`[[webhooks.subscriptions]]`), s
 | Route | Topics | Status |
 | --- | --- | --- |
 | `webhooks.orders.paid.tsx` | `orders/paid` | Forwards the order to `hikyaku-api`. |
-| `webhooks.locations.tsx` | `locations/create`, `locations/update`, `locations/activate`, `locations/deactivate` | Upserts the location's name and country from the payload to `PUT /api/v1/integrations/locations` without `mode`, so a new location lands `unmapped` and an existing one keeps its mapping. Skips (200) shops not connected to Hikyaku. Same retry contract as `orders/paid`: 5xx, network error or the 4 s timeout returns 500, 4xx returns 200. |
+| `webhooks.locations.tsx` | `locations/create`, `locations/update`, `locations/activate`, `locations/deactivate` | Upserts the location's name and country from the payload to `PUT /api/v1/integrations/locations` without `mode`, so a new location lands `unmapped` and an existing one keeps its mapping. Skips (200) shops not connected to Hikyaku. Same retry contract as `orders/paid`: 5xx, network error or the 4 s timeout returns 500, 4xx returns 200. A 403 (the connected account lacks `integrations.locations.write`) is logged and dropped: the Home banner still counts the location from Shopify's live list, and Locations syncs everything once the account has the permission. |
 | `webhooks.fulfillment_orders.tsx` | `fulfillment_orders/moved`, `fulfillment_orders/split`, `fulfillment_orders/merged`, `fulfillment_orders/cancelled` | Verifies HMAC and logs. Will forward re-routing events to `hikyaku-api` once it can handle them. |
 | `webhooks.app.uninstalled.tsx`, `webhooks.app.scopes_update.tsx`, `webhooks.compliance.tsx` | App lifecycle and mandatory compliance topics | Session bookkeeping; compliance is a no-op 200. |
 
