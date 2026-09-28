@@ -14,9 +14,15 @@ import {
 // way PrismaSessionStorage stored it.
 //
 // Writes run in one transaction with the row, so a failed store never leaves
-// a secret behind, and take a per-session advisory lock: offline token
-// refreshes can store the same session concurrently, and two stores both
-// creating a secret would orphan one.
+// a secret behind. Offline token refreshes can store the same session
+// concurrently (the parent `app` and child route loaders both authenticate,
+// in parallel), and two stores both creating a secret would orphan one, so
+// writes are serialized twice over:
+// - within an instance, by `serialized`: each write starts its transaction
+//   only once the previous one is done. Otherwise, with one pooled connection
+//   (connection_limit=1 on Vercel), the next transaction's start timeout runs
+//   out while it queues for the connection.
+// - across instances, by a per-session advisory lock inside the transaction.
 
 type Tx = Prisma.TransactionClient;
 type SessionFields = Omit<
@@ -31,31 +37,33 @@ interface Tokens {
 
 export class VaultSessionStorage {
   async storeSession(session: Session): Promise<boolean> {
-    await prisma.$transaction(async (tx) => {
-      await lockSessions(tx, [session.id]);
-      const existing = await tx.session.findUnique({
-        where: { id: session.id },
-        select: { accessTokenSecretId: true, refreshTokenSecretId: true },
-      });
-      const data = {
-        ...sessionToRow(session),
-        accessTokenSecretId: await putSecret(
-          tx,
-          existing?.accessTokenSecretId ?? null,
-          session.accessToken,
-        ),
-        refreshTokenSecretId: await putSecret(
-          tx,
-          existing?.refreshTokenSecretId ?? null,
-          session.refreshToken,
-        ),
-      };
-      await tx.session.upsert({
-        where: { id: session.id },
-        create: data,
-        update: data,
-      });
-    });
+    await serialized(() =>
+      prisma.$transaction(async (tx) => {
+        await lockSessions(tx, [session.id]);
+        const existing = await tx.session.findUnique({
+          where: { id: session.id },
+          select: { accessTokenSecretId: true, refreshTokenSecretId: true },
+        });
+        const data = {
+          ...sessionToRow(session),
+          accessTokenSecretId: await putSecret(
+            tx,
+            existing?.accessTokenSecretId ?? null,
+            session.accessToken,
+          ),
+          refreshTokenSecretId: await putSecret(
+            tx,
+            existing?.refreshTokenSecretId ?? null,
+            session.refreshToken,
+          ),
+        };
+        await tx.session.upsert({
+          where: { id: session.id },
+          create: data,
+          update: data,
+        });
+      }),
+    );
     return true;
   }
 
@@ -93,28 +101,40 @@ export async function deleteShopSessions(shop: string): Promise<void> {
 }
 
 async function deleteSessionsWhere(where: Prisma.SessionWhereInput) {
-  await prisma.$transaction(async (tx) => {
-    const ids = (
-      await tx.session.findMany({ where, select: { id: true } })
-    ).map((row) => row.id);
-    if (ids.length === 0) return;
-    // Re-read under the locks, so a concurrent store can't swap in a secret
-    // between reading the ids and deleting the row.
-    await lockSessions(tx, ids);
-    const rows = await tx.session.findMany({
-      where: { id: { in: ids } },
-      select: { accessTokenSecretId: true, refreshTokenSecretId: true },
-    });
-    await tx.session.deleteMany({ where: { id: { in: ids } } });
-    for (const row of rows) {
-      if (row.accessTokenSecretId) {
-        await deleteSecret(row.accessTokenSecretId, tx);
+  await serialized(() =>
+    prisma.$transaction(async (tx) => {
+      const ids = (
+        await tx.session.findMany({ where, select: { id: true } })
+      ).map((row) => row.id);
+      if (ids.length === 0) return;
+      // Re-read under the locks, so a concurrent store can't swap in a secret
+      // between reading the ids and deleting the row.
+      await lockSessions(tx, ids);
+      const rows = await tx.session.findMany({
+        where: { id: { in: ids } },
+        select: { accessTokenSecretId: true, refreshTokenSecretId: true },
+      });
+      await tx.session.deleteMany({ where: { id: { in: ids } } });
+      for (const row of rows) {
+        if (row.accessTokenSecretId) {
+          await deleteSecret(row.accessTokenSecretId, tx);
+        }
+        if (row.refreshTokenSecretId) {
+          await deleteSecret(row.refreshTokenSecretId, tx);
+        }
       }
-      if (row.refreshTokenSecretId) {
-        await deleteSecret(row.refreshTokenSecretId, tx);
-      }
-    }
-  });
+    }),
+  );
+}
+
+// This instance's session writes, one at a time. A failed write doesn't stop
+// the ones queued after it.
+let writes: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(write: () => Promise<T>): Promise<T> {
+  const result = writes.then(write);
+  writes = result.catch(() => {});
+  return result;
 }
 
 // Transaction-scoped, so they're released on commit or rollback. Sorted so

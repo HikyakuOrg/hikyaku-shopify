@@ -9,6 +9,10 @@ import { Session } from "@shopify/shopify-app-react-router/server";
 const rows = new Map<string, SessionRow>();
 const secrets = new Map<string, string>();
 let nextSecret = 0;
+// How many fake transactions are open at once, to check writes are
+// serialized.
+let openTransactions = 0;
+let maxOpenTransactions = 0;
 
 type Where = { id?: string | { in: string[] }; shop?: string };
 function matches(row: SessionRow, where: Where) {
@@ -22,7 +26,15 @@ function matches(row: SessionRow, where: Where) {
 
 const db = {
   $executeRaw: vi.fn(async () => 0),
-  $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db)),
+  $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+    maxOpenTransactions = Math.max(maxOpenTransactions, ++openTransactions);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return await fn(db);
+    } finally {
+      openTransactions--;
+    }
+  }),
   session: {
     findUnique: vi.fn(
       async ({ where }: { where: { id: string } }) =>
@@ -92,6 +104,8 @@ beforeEach(() => {
   rows.clear();
   secrets.clear();
   nextSecret = 0;
+  openTransactions = 0;
+  maxOpenTransactions = 0;
   vi.clearAllMocks();
 });
 
@@ -106,6 +120,30 @@ describe("VaultSessionStorage", () => {
     expect(secrets.get(row.accessTokenSecretId!)).toBe("shpat_access");
     expect(secrets.get(row.refreshTokenSecretId!)).toBe("shprt_refresh");
     expect(db.$executeRaw).toHaveBeenCalled(); // advisory lock
+  });
+
+  it("runs concurrent stores one transaction at a time", async () => {
+    // The parent and child route loaders refreshing the same expired session.
+    await Promise.all([
+      storage.storeSession(offlineSession({ accessToken: "shpat_a" })),
+      storage.storeSession(offlineSession({ accessToken: "shpat_b" })),
+    ]);
+
+    expect(maxOpenTransactions).toBe(1);
+    expect(secrets.size).toBe(2);
+    const row = rows.get(`offline_${SHOP}`)!;
+    expect(secrets.get(row.accessTokenSecretId!)).toBe("shpat_b");
+  });
+
+  it("keeps storing after a failed store", async () => {
+    db.$transaction.mockRejectedValueOnce(new Error("connection lost"));
+
+    await expect(storage.storeSession(offlineSession())).rejects.toThrow(
+      "connection lost",
+    );
+    await storage.storeSession(offlineSession());
+
+    expect(rows.size).toBe(1);
   });
 
   it("loads the session back with its tokens", async () => {
