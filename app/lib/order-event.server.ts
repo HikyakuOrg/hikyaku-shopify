@@ -2,6 +2,8 @@
 // contract documented in docs/BACKEND_HANDOFF.md. Pure function, no I/O — the
 // one piece of this app worth unit testing once the contract settles.
 
+import type { OrderFulfillmentGroup } from "./fulfillment-groups";
+
 interface ShopifyLineItem {
   id: number;
   title: string;
@@ -132,6 +134,12 @@ export interface OrderPaidEvent {
     shipping_method: string | null;
     instructions: string | null;
   };
+  /**
+   * Which location ships which line items. Always sent, and never empty:
+   * without groups Hikyaku dispatches the whole order from its nearest
+   * warehouse.
+   */
+  fulfillment_groups: OrderFulfillmentGroup[];
 }
 
 const APP_VERSION = "0.1.0";
@@ -141,8 +149,10 @@ export function buildOrderPaidEvent(params: {
   webhookId: string;
   apiVersion: string;
   payload: ShopifyOrderPaidPayload;
+  /** From buildFulfillmentGroups, over the order's fulfillment orders. */
+  fulfillmentGroups: OrderFulfillmentGroup[];
 }): OrderPaidEvent {
-  const { shop, webhookId, apiVersion, payload } = params;
+  const { shop, webhookId, apiVersion, payload, fulfillmentGroups } = params;
   const { shipping_address: address, customer } = payload;
 
   const requiresShipping = payload.line_items.some(
@@ -183,7 +193,7 @@ export function buildOrderPaidEvent(params: {
         : [],
       total_weight_grams: payload.total_weight,
       line_items: payload.line_items.map((item) => ({
-        id: String(item.id),
+        id: lineItemId(item),
         title: item.title,
         variant_title: item.variant_title,
         sku: item.sku,
@@ -228,7 +238,17 @@ export function buildOrderPaidEvent(params: {
       shipping_method: payload.shipping_lines[0]?.title ?? null,
       instructions: payload.note,
     },
+    fulfillment_groups: fulfillmentGroups,
   };
+}
+
+/**
+ * The event's id for a payload line item: its numeric id as a string. A
+ * fulfillment group names line items the same way, so a group's
+ * `line_item_id` must match one of these exactly.
+ */
+export function lineItemId(item: Pick<ShopifyLineItem, "id">): string {
+  return String(item.id);
 }
 
 function sumShippingLines(lines: ShopifyShippingLine[]): string {

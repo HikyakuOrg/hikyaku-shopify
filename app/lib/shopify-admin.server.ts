@@ -29,8 +29,9 @@ async function query<T>(
   admin: AdminApiContext,
   operation: string,
   variables: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const response = await admin.graphql(operation, { variables });
+  const response = await admin.graphql(operation, { variables, signal });
   const body = (await response.json()) as { data?: T };
   if (!body.data) {
     throw new Error("Shopify Admin API returned no data");
@@ -120,6 +121,8 @@ export interface ShopifyFulfillmentOrderLineItem {
   remainingQuantity: number;
   /** The order line item this fulfillment order line item draws from. */
   lineItem: { id: string };
+  /** Weight of one unit. Null when Shopify has none for the variant. */
+  weight: { value: number; unit: string } | null;
 }
 
 export interface ShopifyFulfillmentOrder {
@@ -149,6 +152,10 @@ const LINE_ITEM_FIELDS = `
     remainingQuantity
     lineItem {
       id
+    }
+    weight {
+      value
+      unit
     }
   }
   pageInfo {
@@ -214,28 +221,41 @@ type RawFulfillmentOrder = Omit<ShopifyFulfillmentOrder, "lineItems"> & {
  * `read_orders` + `read_merchant_managed_fulfillment_orders`.
  *
  * @param orderId Order GID (the `admin_graphql_api_id` of orders/paid).
+ * @param options.signal Aborts every page request, e.g. to fit a webhook's
+ * time budget.
  */
 export async function getOrderFulfillmentOrders(
   admin: AdminApiContext,
   orderId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ShopifyFulfillmentOrder[] | null> {
   const fulfillmentOrders: ShopifyFulfillmentOrder[] = [];
   let after: string | null = null;
   do {
     const data: {
       order: { fulfillmentOrders: Connection<RawFulfillmentOrder> } | null;
-    } = await query(admin, ORDER_FULFILLMENT_ORDERS_QUERY, {
-      id: orderId,
-      first: FULFILLMENT_ORDER_PAGE_SIZE,
-      after,
-      lineItemsFirst: FULFILLMENT_ORDER_LINE_ITEM_PAGE_SIZE,
-    });
+    } = await query(
+      admin,
+      ORDER_FULFILLMENT_ORDERS_QUERY,
+      {
+        id: orderId,
+        first: FULFILLMENT_ORDER_PAGE_SIZE,
+        after,
+        lineItemsFirst: FULFILLMENT_ORDER_LINE_ITEM_PAGE_SIZE,
+      },
+      options.signal,
+    );
     if (!data.order) return null;
     const page = data.order.fulfillmentOrders;
     for (const node of page.nodes) {
       fulfillmentOrders.push({
         ...node,
-        lineItems: await remainingLineItems(admin, node.id, node.lineItems),
+        lineItems: await remainingLineItems(
+          admin,
+          node.id,
+          node.lineItems,
+          options.signal,
+        ),
       });
     }
     after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
@@ -247,6 +267,7 @@ async function remainingLineItems(
   admin: AdminApiContext,
   fulfillmentOrderId: string,
   firstPage: Connection<ShopifyFulfillmentOrderLineItem>,
+  signal?: AbortSignal,
 ): Promise<ShopifyFulfillmentOrderLineItem[]> {
   const lineItems = [...firstPage.nodes];
   let after = firstPage.pageInfo.hasNextPage
@@ -257,11 +278,12 @@ async function remainingLineItems(
       fulfillmentOrder: {
         lineItems: Connection<ShopifyFulfillmentOrderLineItem>;
       } | null;
-    } = await query(admin, FULFILLMENT_ORDER_LINE_ITEMS_QUERY, {
-      id: fulfillmentOrderId,
-      first: PAGE_SIZE,
-      after,
-    });
+    } = await query(
+      admin,
+      FULFILLMENT_ORDER_LINE_ITEMS_QUERY,
+      { id: fulfillmentOrderId, first: PAGE_SIZE, after },
+      signal,
+    );
     if (!data.fulfillmentOrder) break;
     const page = data.fulfillmentOrder.lineItems;
     lineItems.push(...page.nodes);
