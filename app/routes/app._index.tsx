@@ -4,12 +4,13 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { redirect, useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   disconnect,
+  fetchIntegrationLocations,
   fetchOrganisations,
   getConnection,
   getValidAccessToken,
@@ -17,6 +18,9 @@ import {
   type HikyakuOrganisation,
 } from "../lib/hikyaku-api.server";
 import { createAuthorizationRequest } from "../lib/hikyaku-oauth.server";
+import { listLocations } from "../lib/shopify-admin.server";
+import { countUnmapped } from "../lib/location-mapping";
+import { UnmappedLocationsBanner } from "../components/unmapped-locations-banner";
 
 type LoaderData =
   | { status: "disconnected" }
@@ -29,13 +33,15 @@ type LoaderData =
       status: "connected";
       email: string;
       organisationName: string | null;
+      /** Active locations not mapped yet; null if it couldn't be worked out. */
+      unmappedLocations: number | null;
     }
   | { status: "error"; message: string };
 
 export async function loader({
   request,
 }: LoaderFunctionArgs): Promise<LoaderData> {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
   const connection = await getConnection(shop);
@@ -48,6 +54,11 @@ export async function loader({
       status: "connected",
       email: connection.hikyakuEmail,
       organisationName: connection.organisationName,
+      unmappedLocations: await unmappedLocations(
+        admin,
+        shop,
+        connection.organisationSlug,
+      ),
     };
   }
 
@@ -68,6 +79,35 @@ export async function loader({
           ? error.message
           : "Couldn't load your Hikyaku organisations.",
     };
+  }
+}
+
+// Shopify's live location list decides which locations count (active and
+// fulfilling online orders), Hikyaku's stored rows decide which are mapped. A
+// location Hikyaku hasn't stored yet counts as unmapped, so a new location
+// shows up here even if its locations/create webhook hasn't landed.
+async function unmappedLocations(
+  admin: Parameters<typeof listLocations>[0],
+  shop: string,
+  organisationSlug: string,
+): Promise<number | null> {
+  try {
+    const accessToken = await getValidAccessToken(shop);
+    if (!accessToken) return null;
+    const [locations, stored] = await Promise.all([
+      listLocations(admin),
+      fetchIntegrationLocations(accessToken, organisationSlug, shop),
+    ]);
+    if (!stored.ok) {
+      console.error(
+        `Couldn't list Hikyaku locations for ${shop}: ${stored.detail}`,
+      );
+      return null;
+    }
+    return countUnmapped(locations, stored.data);
+  } catch (error) {
+    console.error(`Couldn't count unmapped locations for ${shop}`, error);
+    return null;
   }
 }
 
@@ -105,7 +145,8 @@ export async function action({
       return { error: "That organisation is no longer available." };
     }
     await saveOrganisation(shop, org);
-    return { ok: true };
+    // Mapping locations is the next step of setting up the store.
+    throw redirect("/app/locations");
   }
 
   if (intent === "disconnect") {
@@ -207,6 +248,10 @@ export default function Index() {
         </s-section>
       )}
 
+      {data.status === "connected" && !!data.unmappedLocations && (
+        <UnmappedLocationsBanner count={data.unmappedLocations} />
+      )}
+
       {data.status === "connected" && (
         <s-section heading="Connected">
           <s-paragraph>
@@ -214,17 +259,24 @@ export default function Index() {
             pushed to{" "}
             <strong>{data.organisationName ?? "your organisation"}</strong>.
           </s-paragraph>
-          <fetcher.Form method="post">
-            <input type="hidden" name="intent" value="disconnect" />
-            <s-button
-              variant="tertiary"
-              tone="critical"
-              type="submit"
-              {...(isBusy ? { loading: true } : {})}
-            >
-              Disconnect
-            </s-button>
-          </fetcher.Form>
+          <s-paragraph>
+            Each store location ships from one of your Hikyaku warehouses, or
+            isn&apos;t delivered by Hikyaku at all.
+          </s-paragraph>
+          <s-stack direction="inline" gap="base" alignItems="center">
+            <s-button href="/app/locations">Map locations</s-button>
+            <fetcher.Form method="post">
+              <input type="hidden" name="intent" value="disconnect" />
+              <s-button
+                variant="tertiary"
+                tone="critical"
+                type="submit"
+                {...(isBusy ? { loading: true } : {})}
+              >
+                Disconnect
+              </s-button>
+            </fetcher.Form>
+          </s-stack>
         </s-section>
       )}
 

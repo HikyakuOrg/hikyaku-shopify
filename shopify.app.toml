@@ -6,11 +6,17 @@ embedded = true
 name = "Hikyaku Connect"
 
 [access_scopes]
-# read_orders is the only scope this app needs — it makes no other Admin API
-# calls. Level 2 protected customer data (name/address/phone/email on the
-# orders/paid payload) requires approval in the Dev Dashboard before this app
-# can be published; development stores work without approval.
-scopes = "read_orders"
+# read_orders: the orders/paid payload and an order's fulfillment orders.
+# read_locations: list the shop's locations so each can be mapped to a
+# Hikyaku depot, plus the locations/* webhooks below.
+# read_merchant_managed_fulfillment_orders: which location ships which line
+# items, plus the fulfillment_orders/* webhooks below.
+# AGENTS.md lists every Admin API query the app makes and why. Level 2
+# protected customer data (name/address/phone/email on the orders/paid payload;
+# fulfillment orders expose the same destination address, though the app
+# doesn't query it) requires approval in the Dev Dashboard before this app can
+# be published; development stores work without approval.
+scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders"
 use_legacy_install_flow = false
 
 [webhooks]
@@ -33,6 +39,26 @@ api_version = "2026-07"
   uri = "/webhooks/orders/paid"
   topics = [ "orders/paid" ]
   name = "hikyaku-order-paid"
+
+  # New or changed locations get flagged for depot mapping in Hikyaku.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/locations"
+  topics = [
+    "locations/create",
+    "locations/update",
+    "locations/activate",
+    "locations/deactivate",
+  ]
+
+  # Items of a paid order re-routed to another location after orders/paid.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/fulfillment_orders"
+  topics = [
+    "fulfillment_orders/moved",
+    "fulfillment_orders/split",
+    "fulfillment_orders/merged",
+    "fulfillment_orders/cancelled",
+  ]
 
   # Mandatory for any published app — see
   # https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance.

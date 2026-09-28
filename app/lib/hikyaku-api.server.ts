@@ -7,6 +7,11 @@ import {
 } from "./vault.server";
 import { refreshTokens, type HikyakuTokens } from "./hikyaku-oauth.server";
 import type { OrderPaidEvent } from "./order-event.server";
+import type {
+  HikyakuWarehouse,
+  IntegrationLocation,
+  IntegrationLocationInput,
+} from "./location-mapping";
 
 const REFRESH_SKEW_MS = 60_000;
 
@@ -183,4 +188,137 @@ export async function postOrderEvent(
       detail: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/** The connector slug this app sends as `platform`. */
+export const PLATFORM = "shopify";
+
+/**
+ * Outcome of a call to hikyaku-api. `retry` follows the same contract as
+ * postOrderEvent: true for 5xx, network errors and timeouts (worth trying
+ * again), false for 4xx (the request itself is wrong, or not allowed).
+ */
+export type HikyakuResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; retry: boolean; status: number | null; detail: string };
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+async function errorDetail(response: Response): Promise<string> {
+  // NestJS errors look like { statusCode, message, error }, with `message`
+  // sometimes an array of validation messages.
+  try {
+    const body = (await response.json()) as { message?: unknown };
+    const message = Array.isArray(body.message)
+      ? body.message.join("; ")
+      : body.message;
+    if (typeof message === "string" && message) {
+      return `HTTP ${response.status}: ${message}`;
+    }
+  } catch {
+    // Not JSON; the status alone will do.
+  }
+  return `HTTP ${response.status}`;
+}
+
+async function hikyakuRequest<T>(
+  accessToken: string,
+  organisationSlug: string,
+  path: string,
+  options: { method?: "GET" | "PUT"; body?: unknown; timeoutMs?: number } = {},
+): Promise<HikyakuResult<T>> {
+  try {
+    const response = await fetch(new URL(path, apiUrl()), {
+      method: options.method ?? "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "X-Organisation-Slug": organisationSlug,
+        ...(options.body === undefined
+          ? {}
+          : { "Content-Type": "application/json" }),
+      },
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        retry: response.status >= 500,
+        status: response.status,
+        detail: await errorDetail(response),
+      };
+    }
+    return { ok: true, data: (await response.json()) as T };
+  } catch (error) {
+    return {
+      ok: false,
+      retry: true,
+      status: null,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** The organisation's warehouses, ordered by name. Needs `warehouse.view`. */
+export async function fetchWarehouses(
+  accessToken: string,
+  organisationSlug: string,
+): Promise<HikyakuResult<HikyakuWarehouse[]>> {
+  const result = await hikyakuRequest<{ data: HikyakuWarehouse[] }>(
+    accessToken,
+    organisationSlug,
+    "/api/v1/warehouses",
+  );
+  return result.ok ? { ok: true, data: result.data.data } : result;
+}
+
+/**
+ * The shop's locations as Hikyaku stores them, stale ones included (with
+ * `stale_at` set). Needs `warehouse.view`.
+ */
+export async function fetchIntegrationLocations(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+): Promise<HikyakuResult<IntegrationLocation[]>> {
+  const query = new URLSearchParams({ platform: PLATFORM, shop_domain: shop });
+  const result = await hikyakuRequest<{ data: IntegrationLocation[] }>(
+    accessToken,
+    organisationSlug,
+    `/api/v1/integrations/locations?${query}`,
+  );
+  return result.ok ? { ok: true, data: result.data.data } : result;
+}
+
+/**
+ * Upserts some or all of the shop's locations and returns every location
+ * Hikyaku stores for the shop afterwards. A location sent without `mode`
+ * keeps its mapping (a new one starts `unmapped`). Pass `markMissingStale`
+ * only when `locations` is the shop's complete list. Needs
+ * `integrations.locations.write`.
+ */
+export async function upsertIntegrationLocations(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+  locations: IntegrationLocationInput[],
+  options: { markMissingStale?: boolean; timeoutMs?: number } = {},
+): Promise<HikyakuResult<IntegrationLocation[]>> {
+  const result = await hikyakuRequest<{ data: IntegrationLocation[] }>(
+    accessToken,
+    organisationSlug,
+    "/api/v1/integrations/locations",
+    {
+      method: "PUT",
+      body: {
+        platform: PLATFORM,
+        shop_domain: shop,
+        locations,
+        ...(options.markMissingStale ? { mark_missing_stale: true } : {}),
+      },
+      timeoutMs: options.timeoutMs,
+    },
+  );
+  return result.ok ? { ok: true, data: result.data.data } : result;
 }
