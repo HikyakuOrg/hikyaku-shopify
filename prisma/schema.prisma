@@ -26,8 +26,10 @@ datasource db {
   schemas  = ["shopify"]
 }
 
-// Required by PrismaSessionStorage (app/shopify.server.ts) — one row per
-// Shopify OAuth session (offline token per shop).
+// One row per Shopify OAuth session (offline token per shop), stored by
+// VaultSessionStorage (app/lib/vault-session-storage.server.ts). The access
+// and refresh tokens live in Supabase Vault — these columns hold only the
+// vault secret UUIDs, never raw Shopify tokens.
 model Session {
   id            String    @id
   shop          String
@@ -35,7 +37,6 @@ model Session {
   isOnline      Boolean   @default(false)
   scope         String?
   expires       DateTime?
-  accessToken   String
   userId        BigInt?
   firstName     String?
   lastName      String?
@@ -44,8 +45,9 @@ model Session {
   locale        String?
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
-  refreshToken        String?
   refreshTokenExpires DateTime?
+  accessTokenSecretId  String? @db.Uuid
+  refreshTokenSecretId String? @db.Uuid
 
   @@schema("shopify")
 }
