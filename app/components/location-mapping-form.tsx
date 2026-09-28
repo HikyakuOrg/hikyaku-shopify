@@ -32,6 +32,11 @@ export interface LocationMappingData {
   /** Inactive locations and ones that don't fulfil online orders. */
   otherRows: LocationRow[];
   warehouses: WarehouseOption[];
+  /**
+   * Set when the connected Hikyaku account can see the mappings but not
+   * change them: pickers and Save are disabled.
+   */
+  readOnly: { email: string } | null;
 }
 
 /** Form field names; the action reads them back with these prefixes. */
@@ -84,9 +89,11 @@ function isMissingWarehouse(value: string, warehouses: WarehouseOption[]) {
 export function LocationMappingTable({
   rows,
   warehouses,
+  readOnly = false,
 }: {
   rows: LocationRow[];
   warehouses: WarehouseOption[];
+  readOnly?: boolean;
 }) {
   return (
     <s-table>
@@ -112,6 +119,7 @@ export function LocationMappingTable({
                   labelAccessibilityVisibility="exclusive"
                   name={VALUE_FIELD_PREFIX + row.id}
                   value={row.value}
+                  {...(readOnly ? { disabled: true } : {})}
                 >
                   <Option value={UNMAPPED_VALUE} current={row.value}>
                     Not mapped yet
@@ -145,8 +153,8 @@ export function LocationMappingTable({
                     <s-badge tone="info">Suggested</s-badge>
                     <s-text color="subdued">
                       {row.suggestion.warehouseName} is{" "}
-                      {formatDistance(row.suggestion.distanceKm)} away. Save to
-                      confirm.
+                      {formatDistance(row.suggestion.distanceKm)} away.
+                      {readOnly ? "" : " Save to confirm."}
                     </s-text>
                   </s-stack>
                 )}
@@ -180,11 +188,20 @@ export function LocationMappingForm({
   busy: boolean;
   error?: string;
 }) {
+  const readOnly = data.readOnly !== null;
   return (
     <Form method="post">
       {error && (
         <s-banner heading="Couldn't save" tone="critical">
           {error}
+        </s-banner>
+      )}
+      {data.readOnly && (
+        <s-banner heading="View only" tone="info">
+          The Hikyaku account connected to this store ({data.readOnly.email})
+          can see these mappings but isn&apos;t allowed to change them. Ask an
+          admin of your Hikyaku organisation for permission to map store
+          locations, then reload this page.
         </s-banner>
       )}
       <s-section heading="Where each location ships from">
@@ -204,7 +221,11 @@ export function LocationMappingForm({
             No active locations fulfil online orders on this store.
           </s-paragraph>
         ) : (
-          <LocationMappingTable rows={data.rows} warehouses={data.warehouses} />
+          <LocationMappingTable
+            rows={data.rows}
+            warehouses={data.warehouses}
+            readOnly={readOnly}
+          />
         )}
       </s-section>
 
@@ -220,6 +241,7 @@ export function LocationMappingForm({
               <LocationMappingTable
                 rows={data.otherRows}
                 warehouses={data.warehouses}
+                readOnly={readOnly}
               />
             </s-box>
           </details>
@@ -231,6 +253,7 @@ export function LocationMappingForm({
           type="submit"
           variant="primary"
           {...(busy ? { loading: true } : {})}
+          {...(readOnly ? { disabled: true } : {})}
         >
           Save
         </s-button>

@@ -67,8 +67,15 @@ export async function action({ request }: ActionFunctionArgs) {
   );
 
   if (!result.ok) {
+    // A 403 is the connected account missing integrations.locations.write.
+    // Retrying won't help, and nothing is lost for good: the Home banner
+    // counts from Shopify's live list, so the merchant still sees the location
+    // as unmapped, and the Locations screen explains the missing permission
+    // and syncs every location once the account has it.
     console.error(
-      `Hikyaku location upsert failed for ${shop} (${topic} ${locationId}): ${result.detail}`,
+      result.status === 403
+        ? `Hikyaku location upsert refused for ${shop} (${topic} ${locationId}): the connected account can't change location mappings (${result.detail})`
+        : `Hikyaku location upsert failed for ${shop} (${topic} ${locationId}): ${result.detail}`,
     );
     if (result.retry) {
       return new Response("Upstream error", { status: 500 });
