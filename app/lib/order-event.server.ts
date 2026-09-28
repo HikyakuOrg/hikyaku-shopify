@@ -142,7 +142,67 @@ export interface OrderPaidEvent {
   fulfillment_groups: OrderFulfillmentGroup[];
 }
 
+/**
+ * The order's items were re-routed after orders/paid (a fulfillment order was
+ * moved, split, merged or cancelled). Refers to the order by id only: Hikyaku
+ * takes the recipient and line items from the order.paid it already has.
+ */
+export interface OrderFulfillmentUpdatedEvent {
+  event: {
+    id: string;
+    type: "order.fulfillment_updated";
+    occurred_at: string;
+    api_version: string;
+  };
+  source: OrderPaidEvent["source"];
+  order: { id: string; name: string | null };
+  /**
+   * Every group still to be delivered now, not just the changed ones. May be
+   * empty, when nothing is left.
+   */
+  fulfillment_groups: OrderFulfillmentGroup[];
+  /**
+   * The fulfillment orders the change took items away from (the one moved
+   * out of, those merged, the one cancelled). Hikyaku drops the package of
+   * any that isn't in `fulfillment_groups` any more. A fulfillment order
+   * that's simply gone from the groups without being released (fulfilled)
+   * keeps its package.
+   */
+  released_group_ids: string[];
+}
+
+export type OrderEvent = OrderPaidEvent | OrderFulfillmentUpdatedEvent;
+
 const APP_VERSION = "0.1.0";
+
+export function buildOrderFulfillmentUpdatedEvent(params: {
+  shop: string;
+  webhookId: string;
+  apiVersion: string;
+  order: { id: string; name: string | null };
+  /** From buildFulfillmentGroups, over the order's fulfillment orders now. */
+  fulfillmentGroups: OrderFulfillmentGroup[];
+  releasedGroupIds: string[];
+  /** When the fulfillment orders were read. */
+  occurredAt: Date;
+}): OrderFulfillmentUpdatedEvent {
+  return {
+    event: {
+      id: params.webhookId,
+      type: "order.fulfillment_updated",
+      occurred_at: params.occurredAt.toISOString(),
+      api_version: params.apiVersion,
+    },
+    source: {
+      platform: "shopify",
+      shop_domain: params.shop,
+      app_version: APP_VERSION,
+    },
+    order: params.order,
+    fulfillment_groups: params.fulfillmentGroups,
+    released_group_ids: params.releasedGroupIds,
+  };
+}
 
 export function buildOrderPaidEvent(params: {
   shop: string;

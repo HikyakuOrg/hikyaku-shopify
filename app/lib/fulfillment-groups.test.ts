@@ -239,6 +239,25 @@ describe("buildFulfillmentGroups", () => {
     });
   });
 
+  it("keeps every line item when there is no order to check against", () => {
+    const result = buildFulfillmentGroups(
+      [fulfillmentOrder(1, { lineItems: [lineItem(1, 1), lineItem(9, 1)] })],
+      null,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      groups: [
+        {
+          line_items: [
+            { line_item_id: "1", quantity: 1 },
+            { line_item_id: "9", quantity: 1 },
+          ],
+        },
+      ],
+      unknownLineItemIds: [],
+    });
+  });
+
   it("fails while the order has no fulfillment orders", () => {
     expect(buildFulfillmentGroups([], ORDER_LINE_ITEMS).ok).toBe(false);
   });

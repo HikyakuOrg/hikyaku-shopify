@@ -165,6 +165,29 @@ const LINE_ITEM_FIELDS = `
 
 // No `destination`: the delivery address already arrives in orders/paid, so
 // there is no reason to read it again from here.
+const FULFILLMENT_ORDERS_FIELDS = `
+  fulfillmentOrders(first: $first, after: $after) {
+    nodes {
+      id
+      status
+      assignedLocation {
+        name
+        location {
+          id
+        }
+      }
+      deliveryMethod {
+        methodType
+      }
+      lineItems(first: $lineItemsFirst) {${LINE_ITEM_FIELDS}
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }`;
+
 const ORDER_FULFILLMENT_ORDERS_QUERY = `#graphql
   query HikyakuOrderFulfillmentOrders(
     $id: ID!
@@ -172,27 +195,23 @@ const ORDER_FULFILLMENT_ORDERS_QUERY = `#graphql
     $after: String
     $lineItemsFirst: Int!
   ) {
-    order(id: $id) {
-      fulfillmentOrders(first: $first, after: $after) {
-        nodes {
-          id
-          status
-          assignedLocation {
-            name
-            location {
-              id
-            }
-          }
-          deliveryMethod {
-            methodType
-          }
-          lineItems(first: $lineItemsFirst) {${LINE_ITEM_FIELDS}
-          }
-        }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
+    order(id: $id) {${FULFILLMENT_ORDERS_FIELDS}
+    }
+  }`;
+
+// The fulfillment_orders/* webhooks name fulfillment orders, not the order,
+// so this finds the order and its first page of fulfillment orders in one go.
+const FULFILLMENT_ORDER_ORDER_QUERY = `#graphql
+  query HikyakuFulfillmentOrderOrder(
+    $fulfillmentOrderId: ID!
+    $first: Int!
+    $after: String
+    $lineItemsFirst: Int!
+  ) {
+    fulfillmentOrder(id: $fulfillmentOrderId) {
+      order {
+        id
+        name${FULFILLMENT_ORDERS_FIELDS}
       }
     }
   }`;
@@ -229,24 +248,91 @@ export async function getOrderFulfillmentOrders(
   orderId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<ShopifyFulfillmentOrder[] | null> {
+  return collectFulfillmentOrders(admin, orderId, null, options.signal);
+}
+
+export interface ShopifyOrderFulfillment {
+  /** The order the fulfillment order belongs to. */
+  order: { id: string; name: string };
+  /** All of that order's fulfillment orders, as getOrderFulfillmentOrders. */
+  fulfillmentOrders: ShopifyFulfillmentOrder[];
+}
+
+/**
+ * The order a fulfillment order belongs to, with all of the order's
+ * fulfillment orders. Returns null if the fulfillment order doesn't exist.
+ * Scopes: `read_orders` + `read_merchant_managed_fulfillment_orders`.
+ *
+ * @param fulfillmentOrderId FulfillmentOrder GID, as the fulfillment_orders/*
+ * webhooks name it.
+ * @param options.signal Aborts every page request.
+ */
+export async function getFulfillmentOrderOrder(
+  admin: AdminApiContext,
+  fulfillmentOrderId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ShopifyOrderFulfillment | null> {
+  const data: {
+    fulfillmentOrder: {
+      order: {
+        id: string;
+        name: string;
+        fulfillmentOrders: Connection<RawFulfillmentOrder>;
+      };
+    } | null;
+  } = await query(
+    admin,
+    FULFILLMENT_ORDER_ORDER_QUERY,
+    {
+      fulfillmentOrderId,
+      first: FULFILLMENT_ORDER_PAGE_SIZE,
+      after: null,
+      lineItemsFirst: FULFILLMENT_ORDER_LINE_ITEM_PAGE_SIZE,
+    },
+    options.signal,
+  );
+  if (!data.fulfillmentOrder) return null;
+  const { id, name, fulfillmentOrders } = data.fulfillmentOrder.order;
+  const all = await collectFulfillmentOrders(
+    admin,
+    id,
+    fulfillmentOrders,
+    options.signal,
+  );
+  return all && { order: { id, name }, fulfillmentOrders: all };
+}
+
+/**
+ * Walks an order's fulfillment orders page by page, starting from
+ * `firstPage` when the caller already has it. Null if the order is gone.
+ */
+async function collectFulfillmentOrders(
+  admin: AdminApiContext,
+  orderId: string,
+  firstPage: Connection<RawFulfillmentOrder> | null,
+  signal?: AbortSignal,
+): Promise<ShopifyFulfillmentOrder[] | null> {
   const fulfillmentOrders: ShopifyFulfillmentOrder[] = [];
+  let page = firstPage;
   let after: string | null = null;
   do {
-    const data: {
-      order: { fulfillmentOrders: Connection<RawFulfillmentOrder> } | null;
-    } = await query(
-      admin,
-      ORDER_FULFILLMENT_ORDERS_QUERY,
-      {
-        id: orderId,
-        first: FULFILLMENT_ORDER_PAGE_SIZE,
-        after,
-        lineItemsFirst: FULFILLMENT_ORDER_LINE_ITEM_PAGE_SIZE,
-      },
-      options.signal,
-    );
-    if (!data.order) return null;
-    const page = data.order.fulfillmentOrders;
+    if (!page) {
+      const data: {
+        order: { fulfillmentOrders: Connection<RawFulfillmentOrder> } | null;
+      } = await query(
+        admin,
+        ORDER_FULFILLMENT_ORDERS_QUERY,
+        {
+          id: orderId,
+          first: FULFILLMENT_ORDER_PAGE_SIZE,
+          after,
+          lineItemsFirst: FULFILLMENT_ORDER_LINE_ITEM_PAGE_SIZE,
+        },
+        signal,
+      );
+      if (!data.order) return null;
+      page = data.order.fulfillmentOrders;
+    }
     for (const node of page.nodes) {
       fulfillmentOrders.push({
         ...node,
@@ -254,11 +340,12 @@ export async function getOrderFulfillmentOrders(
           admin,
           node.id,
           node.lineItems,
-          options.signal,
+          signal,
         ),
       });
     }
     after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+    page = null;
   } while (after);
   return fulfillmentOrders;
 }
