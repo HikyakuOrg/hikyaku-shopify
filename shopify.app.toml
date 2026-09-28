@@ -64,9 +64,9 @@ api_version = "2026-07"
 
   # Mandatory for any published app — see
   # https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance.
-  # This app persists no customer data itself (see docs/BACKEND_HANDOFF.md),
-  # so the handler is a no-op 200; Hikyaku's own backend holds the order data
-  # and must handle actual redaction.
+  # This app persists no customer data, so the customers/* topics answer 200;
+  # shop/redact deletes the shop's sessions, Hikyaku connection and Vault
+  # secrets. Hikyaku holds the order data as the merchant's processor.
   [[webhooks.subscriptions]]
   uri = "/webhooks/compliance"
   compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
