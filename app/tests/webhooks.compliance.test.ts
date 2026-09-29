@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionFunctionArgs } from "react-router";
 
-vi.mock("../shopify.server", () => ({
-  authenticate: { webhook: vi.fn() },
+vi.mock("../lib/webhook-verification.server", () => ({
+  verifyWebhook: vi.fn(),
 }));
 vi.mock("../db.server", () => ({
   default: { hikyakuOAuthState: { deleteMany: vi.fn() } },
@@ -12,19 +12,20 @@ vi.mock("../lib/vault-session-storage.server", () => ({
   deleteShopSessions: vi.fn(),
 }));
 
-const { authenticate } = await import("../shopify.server");
+const { verifyWebhook } = await import("../lib/webhook-verification.server");
 const { default: prisma } = await import("../db.server");
 const { disconnect } = await import("../lib/hikyaku-api.server");
-const { deleteShopSessions } = await import(
-  "../lib/vault-session-storage.server"
-);
+const { deleteShopSessions } =
+  await import("../lib/vault-session-storage.server");
 const { action } = await import("../routes/webhooks.compliance");
 
 const SHOP = "example.myshopify.com";
 const run = () =>
-  action({ request: new Request("http://x/webhooks/compliance", { method: "POST" }) } as ActionFunctionArgs);
+  action({
+    request: new Request("http://x/webhooks/compliance", { method: "POST" }),
+  } as ActionFunctionArgs);
 const asTopic = (topic: string) =>
-  vi.mocked(authenticate.webhook).mockResolvedValue({ topic, shop: SHOP } as never);
+  vi.mocked(verifyWebhook).mockResolvedValue({ topic, shop: SHOP } as never);
 
 describe("webhooks.compliance", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -51,8 +52,8 @@ describe("webhooks.compliance", () => {
     },
   );
 
-  it("rejects an invalid HMAC with the 401 authenticate.webhook throws", async () => {
-    vi.mocked(authenticate.webhook).mockRejectedValue(
+  it("rejects an invalid HMAC with the 401 verifyWebhook throws", async () => {
+    vi.mocked(verifyWebhook).mockRejectedValue(
       new Response(null, { status: 401 }),
     );
     await expect(run()).rejects.toMatchObject({ status: 401 });
