@@ -23,6 +23,33 @@ export async function adminForShop(shop: string): Promise<AdminApiContext> {
   return admin;
 }
 
+const APP_INSTALLATION_QUERY = `#graphql
+  query HikyakuAppInstallation {
+    currentAppInstallation {
+      id
+    }
+  }
+`;
+
+/**
+ * Whether the app is installed on the shop right now, for an app/uninstalled
+ * delivery that may be a retry arriving after a reinstall. Uninstalling
+ * revokes the shop's tokens, so this is false when there's no offline
+ * session, its refresh fails, or the query fails.
+ */
+export async function isAppInstalled(
+  shop: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const admin = await adminForShop(shop);
+    await query(admin, APP_INSTALLATION_QUERY, {}, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // admin.graphql throws GraphqlQueryError when the response carries errors, so
 // only a missing `data` is left to check here.
 async function query<T>(
