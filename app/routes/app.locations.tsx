@@ -4,15 +4,21 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { redirect, useFetcher, useLoaderData } from "react-router";
+import {
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useNavigate,
+  useSearchParams,
+} from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   fetchIntegrationLocations,
   fetchWarehouses,
-  getConnection,
-  getValidAccessToken,
+  describeFailure,
+  hikyakuAccess,
   upsertIntegrationLocations,
   type HikyakuResult,
 } from "../lib/hikyaku-api.server";
@@ -44,32 +50,6 @@ type LoaderData =
   | { status: "error"; message: string };
 
 type ActionData = { ok: true; saved: number } | { error: string };
-
-/** The shop's Hikyaku organisation and a live token, or null if not connected. */
-async function hikyakuFor(shop: string) {
-  const connection = await getConnection(shop);
-  if (!connection?.organisationSlug) return null;
-  const accessToken = await getValidAccessToken(shop);
-  if (!accessToken) return null;
-  return {
-    accessToken,
-    organisationSlug: connection.organisationSlug,
-    email: connection.hikyakuEmail,
-  };
-}
-
-function describeFailure(
-  result: Extract<HikyakuResult<unknown>, { ok: false }>,
-  doing: string,
-): string {
-  if (result.status === 401) {
-    return "Your Hikyaku sign in has expired. Disconnect and reconnect Hikyaku from the home screen.";
-  }
-  if (result.status === 403) {
-    return `Your Hikyaku account isn't allowed to ${doing} in this organisation.`;
-  }
-  return `Couldn't ${doing} (${result.detail}).`;
-}
 
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 
@@ -142,7 +122,7 @@ export async function loader({
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const hikyaku = await hikyakuFor(shop);
+  const hikyaku = await hikyakuAccess(shop);
   if (!hikyaku) throw redirect("/app");
   const { accessToken, organisationSlug } = hikyaku;
 
@@ -255,7 +235,7 @@ export async function action({
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const hikyaku = await hikyakuFor(shop);
+  const hikyaku = await hikyakuAccess(shop);
   if (!hikyaku) {
     return { error: "This store isn't connected to Hikyaku any more." };
   }
@@ -309,14 +289,20 @@ export default function Locations() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
+  const navigate = useNavigate();
+  // Set when the merchant arrived here from picking their organisation:
+  // choosing which earlier orders to send comes next.
+  const [searchParams] = useSearchParams();
+  const settingUp = searchParams.has("setup");
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data && "ok" in fetcher.data) {
       shopify.toast.show(
         fetcher.data.saved === 0 ? "Nothing to save" : "Locations saved",
       );
+      if (settingUp) navigate("/app/orders");
     }
-  }, [fetcher.state, fetcher.data, shopify]);
+  }, [fetcher.state, fetcher.data, shopify, settingUp, navigate]);
 
   return (
     <s-page heading="Locations">

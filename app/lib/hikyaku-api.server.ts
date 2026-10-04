@@ -69,6 +69,26 @@ export function getConnection(shop: string) {
   return prisma.hikyakuConnection.findUnique({ where: { shop } });
 }
 
+/**
+ * The shop's Hikyaku organisation with a live token, or null if the shop
+ * isn't connected or hasn't picked an organisation yet.
+ */
+export async function hikyakuAccess(shop: string): Promise<{
+  accessToken: string;
+  organisationSlug: string;
+  email: string;
+} | null> {
+  const connection = await getConnection(shop);
+  if (!connection?.organisationSlug) return null;
+  const accessToken = await getValidAccessToken(shop);
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    organisationSlug: connection.organisationSlug,
+    email: connection.hikyakuEmail,
+  };
+}
+
 export async function saveOrganisation(
   shop: string,
   org: HikyakuOrganisation,
@@ -261,6 +281,20 @@ async function hikyakuRequest<T>(
   }
 }
 
+/** A failed call as a sentence for the merchant; `doing` completes "Couldn't …". */
+export function describeFailure(
+  result: Extract<HikyakuResult<unknown>, { ok: false }>,
+  doing: string,
+): string {
+  if (result.status === 401) {
+    return "Your Hikyaku sign in has expired. Disconnect and reconnect Hikyaku from the home screen.";
+  }
+  if (result.status === 403) {
+    return `Your Hikyaku account isn't allowed to ${doing} in this organisation.`;
+  }
+  return `Couldn't ${doing} (${result.detail}).`;
+}
+
 /** The organisation's warehouses, ordered by name. Needs `warehouse.view`. */
 export async function fetchWarehouses(
   accessToken: string,
@@ -322,4 +356,51 @@ export async function upsertIntegrationLocations(
     },
   );
   return result.ok ? { ok: true, data: result.data.data } : result;
+}
+
+/** A recorded order event, as GET /api/v1/integrations/orders lists it. */
+export interface OrderEventRecord {
+  id: string;
+  platform: string;
+  eventType: string;
+  /** The order GID the event was sent with. */
+  externalOrderId: string;
+  orderName: string | null;
+  status:
+    | "pending"
+    | "processing"
+    | "processed"
+    | "skipped"
+    | "needs_attention"
+    | "failed";
+  error: string | null;
+}
+
+/**
+ * Hikyaku's events for some of the shop's orders, newest first: which orders
+ * it already has, and how they went. At most 100 orders per call. Needs
+ * `packages.view`.
+ */
+export async function fetchOrderEvents(
+  accessToken: string,
+  organisationSlug: string,
+  orderIds: string[],
+): Promise<HikyakuResult<OrderEventRecord[]>> {
+  const query = new URLSearchParams({
+    platform: PLATFORM,
+    external_order_ids: orderIds.join(","),
+    limit: "200",
+  });
+  const result = await hikyakuRequest<{ data: OrderEventRecord[] }>(
+    accessToken,
+    organisationSlug,
+    `/api/v1/integrations/orders?${query}`,
+  );
+  if (!result.ok) return result;
+  // Kept to the asked-for orders, in case the API ignores the filter.
+  const wanted = new Set(orderIds);
+  return {
+    ok: true,
+    data: result.data.data.filter((event) => wanted.has(event.externalOrderId)),
+  };
 }

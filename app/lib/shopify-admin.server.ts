@@ -405,3 +405,317 @@ async function remainingLineItems(
   }
   return lineItems;
 }
+
+/** A row of the Orders screen: enough to recognise the order. */
+export interface ShopifyOrderSummary {
+  /** GID, e.g. `gid://shopify/Order/123`. */
+  id: string;
+  name: string;
+  processedAt: string;
+  displayFinancialStatus: string | null;
+  displayFulfillmentStatus: string;
+  totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
+  customer: { displayName: string } | null;
+  shippingAddress: {
+    name: string | null;
+    city: string | null;
+    provinceCode: string | null;
+    countryCodeV2: string | null;
+  } | null;
+}
+
+export interface OrderPage {
+  orders: ShopifyOrderSummary[];
+  pageInfo: {
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+    startCursor: string | null;
+    endCursor: string | null;
+  };
+}
+
+const ORDERS_QUERY = `#graphql
+  query HikyakuOrders(
+    $first: Int
+    $last: Int
+    $after: String
+    $before: String
+    $query: String!
+  ) {
+    orders(
+      first: $first
+      last: $last
+      after: $after
+      before: $before
+      query: $query
+      sortKey: PROCESSED_AT
+      reverse: true
+    ) {
+      nodes {
+        id
+        name
+        processedAt
+        displayFinancialStatus
+        displayFulfillmentStatus
+        totalPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
+        customer {
+          displayName
+        }
+        shippingAddress {
+          name
+          city
+          provinceCode
+          countryCodeV2
+        }
+      }
+      pageInfo {
+        hasNextPage
+        hasPreviousPage
+        startCursor
+        endCursor
+      }
+    }
+  }`;
+
+/**
+ * One page of the orders matching an `orders` search, newest first. Shopify
+ * only shows apps the last 60 days of orders without `read_all_orders`.
+ * Scope: `read_orders`.
+ *
+ * @param page `after` for the next page, `before` for the previous one.
+ */
+export async function listOrders(
+  admin: AdminApiContext,
+  search: string,
+  page: { size: number; after?: string | null; before?: string | null },
+): Promise<OrderPage> {
+  const backwards = !page.after && !!page.before;
+  const data: {
+    orders: {
+      nodes: ShopifyOrderSummary[];
+      pageInfo: OrderPage["pageInfo"];
+    };
+  } = await query(admin, ORDERS_QUERY, {
+    query: search,
+    first: backwards ? null : page.size,
+    last: backwards ? page.size : null,
+    after: backwards ? null : (page.after ?? null),
+    before: backwards ? page.before : null,
+  });
+  return { orders: data.orders.nodes, pageInfo: data.orders.pageInfo };
+}
+
+interface Money {
+  shopMoney: { amount: string };
+}
+
+export interface ShopifyOrderLineItem {
+  /** GID, e.g. `gid://shopify/LineItem/123`. */
+  id: string;
+  title: string;
+  variantTitle: string | null;
+  sku: string | null;
+  quantity: number;
+  requiresShipping: boolean;
+  originalUnitPriceSet: Money;
+}
+
+/**
+ * A whole order as the Admin API has it, to send to Hikyaku as if its
+ * orders/paid had arrived. See order-import.ts for the mapping.
+ */
+export interface ShopifyOrder {
+  id: string;
+  legacyResourceId: string;
+  name: string;
+  createdAt: string;
+  processedAt: string;
+  currencyCode: string;
+  displayFinancialStatus: string | null;
+  displayFulfillmentStatus: string;
+  cancelledAt: string | null;
+  closed: boolean;
+  totalPriceSet: Money;
+  subtotalPriceSet: Money | null;
+  totalTaxSet: Money | null;
+  /** Grams, as a string (UnsignedInt64). */
+  totalWeight: string | null;
+  note: string | null;
+  tags: string[];
+  email: string | null;
+  customer: {
+    legacyResourceId: string;
+    firstName: string | null;
+    lastName: string | null;
+    defaultEmailAddress: { emailAddress: string | null } | null;
+    defaultPhoneNumber: { phoneNumber: string } | null;
+  } | null;
+  shippingAddress: {
+    address1: string | null;
+    address2: string | null;
+    city: string | null;
+    province: string | null;
+    provinceCode: string | null;
+    zip: string | null;
+    country: string | null;
+    countryCodeV2: string | null;
+    company: string | null;
+    name: string | null;
+    phone: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  } | null;
+  shippingLines: { nodes: Array<{ title: string; originalPriceSet: Money }> };
+  lineItems: ShopifyOrderLineItem[];
+}
+
+const ORDER_LINE_ITEM_PAGE_SIZE = 100;
+
+const ORDER_LINE_ITEMS_FIELDS = `
+  nodes {
+    id
+    title
+    variantTitle
+    sku
+    quantity
+    requiresShipping
+    originalUnitPriceSet {
+      shopMoney {
+        amount
+      }
+    }
+  }
+  pageInfo {
+    hasNextPage
+    endCursor
+  }`;
+
+const ORDER_QUERY = `#graphql
+  query HikyakuOrder($id: ID!, $lineItemsFirst: Int!) {
+    order(id: $id) {
+      id
+      legacyResourceId
+      name
+      createdAt
+      processedAt
+      currencyCode
+      displayFinancialStatus
+      displayFulfillmentStatus
+      cancelledAt
+      closed
+      totalPriceSet {
+        shopMoney {
+          amount
+        }
+      }
+      subtotalPriceSet {
+        shopMoney {
+          amount
+        }
+      }
+      totalTaxSet {
+        shopMoney {
+          amount
+        }
+      }
+      totalWeight
+      note
+      tags
+      email
+      customer {
+        legacyResourceId
+        firstName
+        lastName
+        defaultEmailAddress {
+          emailAddress
+        }
+        defaultPhoneNumber {
+          phoneNumber
+        }
+      }
+      shippingAddress {
+        address1
+        address2
+        city
+        province
+        provinceCode
+        zip
+        country
+        countryCodeV2
+        company
+        name
+        phone
+        latitude
+        longitude
+      }
+      shippingLines(first: 10) {
+        nodes {
+          title
+          originalPriceSet {
+            shopMoney {
+              amount
+            }
+          }
+        }
+      }
+      lineItems(first: $lineItemsFirst) {${ORDER_LINE_ITEMS_FIELDS}
+      }
+    }
+  }`;
+
+// Only for an order with more line items than fit on the first page above.
+const ORDER_LINE_ITEMS_QUERY = `#graphql
+  query HikyakuOrderLineItems($id: ID!, $first: Int!, $after: String) {
+    order(id: $id) {
+      lineItems(first: $first, after: $after) {${ORDER_LINE_ITEMS_FIELDS}
+      }
+    }
+  }`;
+
+/**
+ * An order with its customer, shipping address and every line item, for
+ * sending an order placed before the store was connected. Returns null if
+ * the order doesn't exist. Scope: `read_orders`.
+ */
+export async function getOrder(
+  admin: AdminApiContext,
+  orderId: string,
+): Promise<ShopifyOrder | null> {
+  const data: {
+    order:
+      | (Omit<ShopifyOrder, "lineItems"> & {
+          lineItems: Connection<ShopifyOrderLineItem>;
+        })
+      | null;
+  } = await query(admin, ORDER_QUERY, {
+    id: orderId,
+    lineItemsFirst: ORDER_LINE_ITEM_PAGE_SIZE,
+  });
+  if (!data.order) return null;
+
+  const { lineItems: firstPage, ...order } = data.order;
+  const lineItems = [...firstPage.nodes];
+  let after = firstPage.pageInfo.hasNextPage
+    ? firstPage.pageInfo.endCursor
+    : null;
+  while (after) {
+    const page: {
+      order: { lineItems: Connection<ShopifyOrderLineItem> } | null;
+    } = await query(admin, ORDER_LINE_ITEMS_QUERY, {
+      id: orderId,
+      first: PAGE_SIZE,
+      after,
+    });
+    if (!page.order) return null;
+    lineItems.push(...page.order.lineItems.nodes);
+    after = page.order.lineItems.pageInfo.hasNextPage
+      ? page.order.lineItems.pageInfo.endCursor
+      : null;
+  }
+  return { ...order, lineItems };
+}

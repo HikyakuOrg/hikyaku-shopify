@@ -11,6 +11,7 @@ import { authenticate } from "../shopify.server";
 import {
   disconnect,
   fetchIntegrationLocations,
+  fetchOrderEvents,
   fetchOrganisations,
   getConnection,
   getValidAccessToken,
@@ -18,9 +19,14 @@ import {
   type HikyakuOrganisation,
 } from "../lib/hikyaku-api.server";
 import { createAuthorizationRequest } from "../lib/hikyaku-oauth.server";
-import { listLocations } from "../lib/shopify-admin.server";
+import { listLocations, listOrders } from "../lib/shopify-admin.server";
 import { countUnmapped } from "../lib/location-mapping";
+import {
+  ORDER_IMPORT_LIMIT,
+  importableOrdersSearch,
+} from "../lib/order-import";
 import { UnmappedLocationsBanner } from "../components/unmapped-locations-banner";
+import { EarlierOrdersBanner } from "../components/earlier-orders-banner";
 
 type LoaderData =
   | { status: "disconnected" }
@@ -35,6 +41,8 @@ type LoaderData =
       organisationName: string | null;
       /** Active locations not mapped yet; null if it couldn't be worked out. */
       unmappedLocations: number | null;
+      /** Orders from before connecting that Hikyaku lacks; null if unknown. */
+      earlierOrders: { count: number; more: boolean } | null;
     }
   | { status: "error"; message: string };
 
@@ -50,15 +58,21 @@ export async function loader({
   }
 
   if (connection.organisationSlug) {
+    const [unmapped, earlier] = await Promise.all([
+      unmappedLocations(admin, shop, connection.organisationSlug),
+      earlierOrders(
+        admin,
+        shop,
+        connection.organisationSlug,
+        connection.createdAt,
+      ),
+    ]);
     return {
       status: "connected",
       email: connection.hikyakuEmail,
       organisationName: connection.organisationName,
-      unmappedLocations: await unmappedLocations(
-        admin,
-        shop,
-        connection.organisationSlug,
-      ),
+      unmappedLocations: unmapped,
+      earlierOrders: earlier,
     };
   }
 
@@ -111,6 +125,48 @@ async function unmappedLocations(
   }
 }
 
+// Orders paid before the store was connected never had an orders/paid for
+// Hikyaku. Checks the newest page of those still waiting to ship against what
+// Hikyaku has, which an import or a webhook retry may have added since.
+async function earlierOrders(
+  admin: Parameters<typeof listOrders>[0],
+  shop: string,
+  organisationSlug: string,
+  connectedAt: Date,
+): Promise<{ count: number; more: boolean } | null> {
+  try {
+    const accessToken = await getValidAccessToken(shop);
+    if (!accessToken) return null;
+    const page = await listOrders(admin, importableOrdersSearch(connectedAt), {
+      size: ORDER_IMPORT_LIMIT,
+    });
+    if (page.orders.length === 0) return { count: 0, more: false };
+    const events = await fetchOrderEvents(
+      accessToken,
+      organisationSlug,
+      page.orders.map((order) => order.id),
+    );
+    if (!events.ok) {
+      console.error(
+        `Couldn't list Hikyaku order events for ${shop}: ${events.detail}`,
+      );
+      return null;
+    }
+    const known = new Set(
+      events.data
+        .filter((event) => event.eventType === "order.paid")
+        .map((event) => event.externalOrderId),
+    );
+    return {
+      count: page.orders.filter((order) => !known.has(order.id)).length,
+      more: page.pageInfo.hasNextPage,
+    };
+  } catch (error) {
+    console.error(`Couldn't count earlier orders for ${shop}`, error);
+    return null;
+  }
+}
+
 type ActionData = { authorizeUrl: string } | { ok: true } | { error: string };
 
 export async function action({
@@ -145,8 +201,9 @@ export async function action({
       return { error: "That organisation is no longer available." };
     }
     await saveOrganisation(shop, org);
-    // Mapping locations is the next step of setting up the store.
-    throw redirect("/app/locations");
+    // Mapping locations is the next step of setting up the store, then
+    // choosing which earlier orders to send.
+    throw redirect("/app/locations?setup=1");
   }
 
   if (intent === "disconnect") {
@@ -252,6 +309,13 @@ export default function Index() {
         <UnmappedLocationsBanner count={data.unmappedLocations} />
       )}
 
+      {data.status === "connected" && !!data.earlierOrders?.count && (
+        <EarlierOrdersBanner
+          count={data.earlierOrders.count}
+          more={data.earlierOrders.more}
+        />
+      )}
+
       {data.status === "connected" && (
         <s-section heading="Connected">
           <s-paragraph>
@@ -265,6 +329,7 @@ export default function Index() {
           </s-paragraph>
           <s-stack direction="inline" gap="base" alignItems="center">
             <s-button href="/app/locations">Map locations</s-button>
+            <s-button href="/app/orders">Add earlier orders</s-button>
             <fetcher.Form method="post">
               <input type="hidden" name="intent" value="disconnect" />
               <s-button
