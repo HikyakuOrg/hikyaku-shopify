@@ -6,7 +6,8 @@ embedded = true
 name = "Hikyaku Connect"
 
 [access_scopes]
-# read_orders: the orders/paid payload and an order's fulfillment orders.
+# read_orders: the orders/paid payload, an order's fulfillment orders, and
+# listing/reading paid orders from before the store was connected (Orders).
 # read_locations: list the shop's locations so each can be mapped to a
 # Hikyaku depot, plus the locations/* webhooks below.
 # read_merchant_managed_fulfillment_orders: which location ships which line
