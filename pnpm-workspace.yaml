@@ -1,3 +1,9 @@
+# Only resolve versions published at least 7 days ago (in minutes). Hijacked
+# releases are usually caught and pulled within hours to days. To take an
+# urgent fix sooner, add the package to minimumReleaseAgeExclude.
+minimumReleaseAge: 10080
+
+# Packages allowed to run install scripts. Review any addition.
 allowBuilds:
   '@parcel/watcher': true
   '@prisma/client': true

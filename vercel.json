@@ -2,5 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "react-router",
   "regions": ["syd1"],
-  "buildCommand": "pnpm run vercel-build"
+  "buildCommand": "pnpm run vercel-build",
+  "installCommand": "pnpm install --frozen-lockfile"
 }
