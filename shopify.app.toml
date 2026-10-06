@@ -80,7 +80,6 @@ redirect_urls = [
 ]
 
 [build]
-include_config_on_deploy = true
 # false so `shopify app dev` doesn't overwrite the production URLs above with
 # a tunnel URL. For local dev, link a separate dev app instead:
 # `shopify app config link` -> shopify.app.dev.toml, then `shopify app config use dev`.
