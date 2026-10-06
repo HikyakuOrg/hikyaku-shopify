@@ -17,7 +17,9 @@ name = "Hikyaku Connect"
 # fulfillment orders expose the same destination address, though the app
 # doesn't query it) requires approval in the Dev Dashboard before this app can
 # be published; development stores work without approval.
-scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders"
+# write_shipping: carrierServiceCreate/Update/Delete, so Hikyaku can quote
+# delivery rates at checkout (HIK-206; being tested in the HIK-207 spike).
+scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders,write_shipping"
 use_legacy_install_flow = false
 
 [webhooks]
