@@ -8,6 +8,12 @@ updates:
     # version younger than 7 days.
     cooldown:
       default-days: 7
+    # @types/node follows the oldest Node the app supports (engines.node in
+    # package.json), not the newest: newer majors type APIs Node 22 lacks.
+    # Raise it together with engines.node.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
