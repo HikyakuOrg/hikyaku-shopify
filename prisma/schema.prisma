@@ -1,28 +1,32 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
+// Generated into app/generated/prisma (gitignored) by `prisma generate`,
+// which the build and typecheck scripts run first.
 generator client {
-  provider = "prisma-client-js"
+  provider     = "prisma-client"
+  output       = "../app/generated/prisma"
+  moduleFormat = "esm"
 }
 
 // Lives in its own "shopify" schema in the shared Hikyaku Supabase Postgres
 // instance, so it can never collide with hikyaku-api's tables.
 //
-// DATABASE_URL is the runtime connection: on Vercel it must be Supabase's
-// transaction pooler (port 6543, `pgbouncer=true&connection_limit=1`) so
-// serverless instances don't exhaust Postgres connections. DIRECT_URL is the
-// direct connection (port 5432), used only by `prisma migrate` — DDL and
-// advisory locks are unreliable under transaction pooling. Self-hosted, both
-// can be the direct URL. See .env.example.
+// The connections aren't configured here. DATABASE_URL is the runtime
+// connection, made through the pg driver adapter (app/db.server.ts): on
+// Vercel it must be Supabase's transaction pooler (port 6543, with
+// `connection_limit=1`) so serverless instances don't exhaust Postgres
+// connections. DIRECT_URL is the direct connection (port 5432), used only by
+// `prisma migrate` (prisma.config.ts): DDL and session-level advisory locks
+// are unreliable under transaction pooling. Self-hosted, both can be the
+// direct URL. See .env.example.
 //
 // DATABASE_URL connects as the hikyaku_shopify role, which can only read and
 // write tables in this schema (new tables are granted automatically) and
 // reach Vault through the shopify.*_secret wrappers. See the
 // least_privilege_role migration.
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
   schemas  = ["shopify"]
 }
 

@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma } from "../generated/prisma/client";
 import prisma from "../db.server";
 
 // Hikyaku OAuth tokens and Shopify session tokens are stored as Supabase
