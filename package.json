@@ -23,7 +23,7 @@
     "node": ">=22.12"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.3",
+    "@prisma/client": "^7.10.0",
     "@react-router/dev": "^7.18.2",
     "@react-router/fs-routes": "^7.18.2",
     "@react-router/node": "^7.18.2",
