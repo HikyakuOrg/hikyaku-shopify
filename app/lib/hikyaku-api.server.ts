@@ -105,12 +105,35 @@ export async function saveOrganisation(
 }
 
 /**
- * Forgets the shop's Hikyaku connection: its tokens and the app's record of
- * Hikyaku rates at checkout. Whatever those rates set up in the shop itself
- * (the carrier service) has to be removed first, while the shop's admin is
- * still reachable; see the Home screen's disconnect.
+ * Forgets the shop's Hikyaku connection: its tokens, the app's record of
+ * Hikyaku rates at checkout and hikyaku-api's rate settings for the shop.
+ * Whatever those rates set up in the shop itself (the carrier service, static
+ * rates) has to be removed first, while the shop's admin is still reachable;
+ * see the Home screen's disconnect.
  */
 export async function disconnect(shop: string): Promise<void> {
+  // hikyaku-api's rate settings for the shop go too, while the token still
+  // works. Best effort: they only answer the carrier service callback, which
+  // the shop no longer calls once its rates are removed or it's uninstalled.
+  try {
+    const access = await hikyakuAccess(shop);
+    if (access) {
+      const deleted = await deleteShippingRates(
+        access.accessToken,
+        access.organisationSlug,
+        shop,
+      );
+      if (!deleted.ok && deleted.status !== 404) {
+        console.warn(
+          `Couldn't delete Hikyaku rate settings for ${shop}: ${deleted.detail}`,
+        );
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `Couldn't delete Hikyaku rate settings for ${shop}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   await prisma.shippingRates.deleteMany({ where: { shop } });
   const existing = await prisma.hikyakuConnection.findUnique({
     where: { shop },
