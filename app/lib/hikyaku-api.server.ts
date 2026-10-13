@@ -229,32 +229,64 @@ export const PLATFORM = "shopify";
  */
 export type HikyakuResult<T> =
   | { ok: true; data: T }
-  | { ok: false; retry: boolean; status: number | null; detail: string };
+  | {
+      ok: false;
+      retry: boolean;
+      status: number | null;
+      detail: string;
+      /** The API's machine-readable reason, when its error body has one. */
+      code?: string;
+      /** The catalog services a 422 is about, when it names some. */
+      serviceIds?: string[];
+    };
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-async function errorDetail(response: Response): Promise<string> {
+async function errorDetail(
+  response: Response,
+): Promise<{ detail: string; code?: string; serviceIds?: string[] }> {
   // NestJS errors look like { statusCode, message, error }, with `message`
-  // sometimes an array of validation messages.
+  // sometimes an array of validation messages. Some also carry a `code` and
+  // the `service_ids` they're about.
+  let detail = `HTTP ${response.status}`;
   try {
-    const body = (await response.json()) as { message?: unknown };
+    const body = (await response.json()) as {
+      message?: unknown;
+      code?: unknown;
+      service_ids?: unknown;
+    };
     const message = Array.isArray(body.message)
       ? body.message.join("; ")
       : body.message;
     if (typeof message === "string" && message) {
-      return `HTTP ${response.status}: ${message}`;
+      detail = `HTTP ${response.status}: ${message}`;
     }
+    return {
+      detail,
+      ...(typeof body.code === "string" ? { code: body.code } : {}),
+      ...(Array.isArray(body.service_ids)
+        ? {
+            serviceIds: body.service_ids.filter(
+              (id): id is string => typeof id === "string",
+            ),
+          }
+        : {}),
+    };
   } catch {
     // Not JSON; the status alone will do.
+    return { detail };
   }
-  return `HTTP ${response.status}`;
 }
 
 async function hikyakuRequest<T>(
   accessToken: string,
   organisationSlug: string,
   path: string,
-  options: { method?: "GET" | "PUT"; body?: unknown; timeoutMs?: number } = {},
+  options: {
+    method?: "GET" | "PUT" | "DELETE";
+    body?: unknown;
+    timeoutMs?: number;
+  } = {},
 ): Promise<HikyakuResult<T>> {
   try {
     const response = await fetch(new URL(path, apiUrl()), {
@@ -275,9 +307,10 @@ async function hikyakuRequest<T>(
         ok: false,
         retry: response.status >= 500,
         status: response.status,
-        detail: await errorDetail(response),
+        ...(await errorDetail(response)),
       };
     }
+    if (response.status === 204) return { ok: true, data: undefined as T };
     return { ok: true, data: (await response.json()) as T };
   } catch (error) {
     return {
@@ -430,4 +463,111 @@ export async function fetchStaticPlan(
     `/api/v1/integrations/shipping-rates/static-plan?${query}`,
   );
   return result.ok ? { ok: true, data: result.data.data } : result;
+}
+
+/** How a catalog service is priced. Mirrors hikyaku-api. */
+export type ServiceUnit =
+  | "per_km"
+  | "per_mi"
+  | "per_kg"
+  | "per_lb"
+  | "per_delivery"
+  | "per_recipient";
+
+/** One shop's Hikyaku rates at checkout, as hikyaku-api stores them. */
+export interface ShippingRateSettings {
+  enabled: boolean;
+  service_ids: string[];
+  shop_currency: string | null;
+  path: "live" | "static" | null;
+  /** Per banded service, in its own unit (km, mi, kg or lb). */
+  band_settings: Record<string, { band_width: number; max: number }>;
+}
+
+/** A catalog service the shop can offer, priced in the asked-for currency. */
+export interface ShippingRateService {
+  id: string;
+  name: string;
+  description: string | null;
+  unit: ServiceUnit;
+  /** Decimal in `currency`; null when the service has no price in it. */
+  amount: string | null;
+  currency: string;
+}
+
+export interface ShippingRatesOverview {
+  settings: ShippingRateSettings;
+  stripe_connected: boolean;
+  services: ShippingRateService[];
+  /** The dashboard's service editor, to add a price in another currency. */
+  dashboard_service_url: string | null;
+}
+
+function shippingRatesPath(shop: string, currency?: string): string {
+  const query = new URLSearchParams({ platform: PLATFORM, shop_domain: shop });
+  if (currency) query.set("currency", currency);
+  return `/api/v1/integrations/shipping-rates?${query}`;
+}
+
+/**
+ * The shop's rate settings, with the organisation's catalog priced in
+ * `currency` (the shop currency) and whether Stripe is connected. Needs
+ * `warehouse.view`.
+ */
+export async function fetchShippingRates(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+  currency: string,
+): Promise<HikyakuResult<ShippingRatesOverview>> {
+  const result = await hikyakuRequest<{ data: ShippingRatesOverview }>(
+    accessToken,
+    organisationSlug,
+    shippingRatesPath(shop, currency),
+  );
+  return result.ok ? { ok: true, data: result.data.data } : result;
+}
+
+/**
+ * Saves the shop's rate settings. A 422 carries a `code`
+ * (stripe_not_connected, no_services, service_missing_currency,
+ * unknown_service, band_settings_invalid) and the `serviceIds` it's about; a
+ * 409 means another organisation holds the shop. Needs
+ * `integrations.shipping_rates.write`.
+ */
+export async function saveShippingRates(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+  settings: Omit<ShippingRateSettings, "shop_currency"> & {
+    shop_currency: string;
+  },
+): Promise<HikyakuResult<ShippingRateSettings>> {
+  const result = await hikyakuRequest<{ data: ShippingRateSettings }>(
+    accessToken,
+    organisationSlug,
+    "/api/v1/integrations/shipping-rates",
+    {
+      method: "PUT",
+      body: { platform: PLATFORM, shop_domain: shop, ...settings },
+    },
+  );
+  return result.ok ? { ok: true, data: result.data.data } : result;
+}
+
+/**
+ * Forgets the shop's rate settings, so the carrier service callback answers
+ * no rates. Idempotent. Needs `integrations.shipping_rates.write`.
+ */
+export async function deleteShippingRates(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+): Promise<HikyakuResult<void>> {
+  return hikyakuRequest<void>(
+    accessToken,
+    organisationSlug,
+    shippingRatesPath(shop),
+    { method: "DELETE" },
+  );
 }

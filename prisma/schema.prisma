@@ -107,6 +107,10 @@ model ShippingRates {
   // Static path: each Hikyaku method definition's name → its rate code, so
   // orders/paid can tell which service a static rate was for.
   staticRates             Json?
+  // The plan and currency the rates were last set up for, so shop/update
+  // only re-checks the path when one of them changed.
+  shopPlan                String?
+  shopCurrency            String?
   // The last failure setting up or switching the path, shown on the screen
   // until a later attempt succeeds. Null when everything is in place.
   error                   String?
