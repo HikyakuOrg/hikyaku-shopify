@@ -19,7 +19,7 @@ import {
   type HikyakuOrganisation,
 } from "../lib/hikyaku-api.server";
 import { createAuthorizationRequest } from "../lib/hikyaku-oauth.server";
-import { removeCarrierService } from "../lib/carrier-service.server";
+import { removeHikyakuRates } from "../lib/shipping-rates.server";
 import { listLocations, listOrders } from "../lib/shopify-admin.server";
 import { countUnmapped } from "../lib/location-mapping";
 import {
@@ -209,17 +209,13 @@ export async function action({
 
   if (intent === "disconnect") {
     // Without a Hikyaku connection nothing answers the carrier service's
-    // callback, so its rates go first. A failure only leaves a rate that
-    // checkout can't get, so it doesn't block disconnecting.
-    const removed = await removeCarrierService(admin, shop).catch(
-      (error: unknown) => ({
-        ok: false as const,
-        errors: [error instanceof Error ? error.message : String(error)],
-      }),
-    );
-    if (!removed.ok) {
+    // callback or keeps static rates in sync, so Hikyaku rates leave checkout
+    // first. A failure is logged, not blocking: the merchant asked to
+    // disconnect, and the Shipping rates screen can't help once they have.
+    const errors = await removeHikyakuRates(admin, shop);
+    if (errors.length > 0) {
       console.error(
-        `Removing the Hikyaku carrier service failed for ${shop}: ${removed.errors.join("; ")}`,
+        `Removing Hikyaku rates failed for ${shop}: ${errors.join("; ")}`,
       );
     }
     await disconnect(shop);

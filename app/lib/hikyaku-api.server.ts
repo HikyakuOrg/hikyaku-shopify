@@ -12,6 +12,7 @@ import type {
   IntegrationLocation,
   IntegrationLocationInput,
 } from "./location-mapping";
+import type { StaticPlan } from "./static-rates";
 
 const REFRESH_SKEW_MS = 60_000;
 
@@ -410,4 +411,23 @@ export async function fetchOrderEvents(
     ok: true,
     data: result.data.data.filter((event) => wanted.has(event.externalOrderId)),
   };
+}
+
+/**
+ * The static path's rates and coverage for the shop (HIK-214): what the app
+ * writes into its delivery profiles and the Function's metafields. Needs
+ * `warehouse.view`.
+ */
+export async function fetchStaticPlan(
+  accessToken: string,
+  organisationSlug: string,
+  shop: string,
+): Promise<HikyakuResult<StaticPlan>> {
+  const query = new URLSearchParams({ platform: PLATFORM, shop_domain: shop });
+  const result = await hikyakuRequest<{ data: StaticPlan }>(
+    accessToken,
+    organisationSlug,
+    `/api/v1/integrations/shipping-rates/static-plan?${query}`,
+  );
+  return result.ok ? { ok: true, data: result.data.data } : result;
 }

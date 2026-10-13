@@ -104,6 +104,9 @@ model ShippingRates {
   path                    String?
   carrierServiceId        String?
   deliveryCustomizationId String?
+  // Static path: each Hikyaku method definition's name → its rate code, so
+  // orders/paid can tell which service a static rate was for.
+  staticRates             Json?
   // The last failure setting up or switching the path, shown on the screen
   // until a later attempt succeeds. Null when everything is in place.
   error                   String?

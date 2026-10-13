@@ -17,9 +17,13 @@ name = "Hikyaku Connect"
 # fulfillment orders expose the same destination address, though the app
 # doesn't query it) requires approval in the Dev Dashboard before this app can
 # be published; development stores work without approval.
-# write_shipping: carrierServiceCreate/Update/Delete, so Hikyaku can quote
-# delivery rates at checkout (HIK-206; being tested in the HIK-207 spike).
-scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders,write_shipping"
+# write_shipping: Hikyaku rates at checkout (HIK-206). The live path
+# registers a carrier service (carrierServiceCreate/Update/Delete); the static
+# path writes Hikyaku rates into the delivery profiles (deliveryProfileUpdate).
+# write_delivery_customizations: the static path's delivery customization
+# Function, which keeps the Hikyaku rate that fits the address and hides the
+# rest.
+scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders,write_shipping,write_delivery_customizations"
 use_legacy_install_flow = false
 
 [webhooks]
