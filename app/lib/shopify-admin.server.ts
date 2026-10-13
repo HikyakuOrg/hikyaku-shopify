@@ -1,9 +1,9 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import { authenticate, unauthenticated } from "../shopify.server";
 
-// The app's only Admin API reads. Every query here needs a scope listed in
-// shopify.app.toml, and AGENTS.md lists each one with the reason it exists;
-// keep all three in sync when adding a query.
+// The app's Admin API calls. Every query and mutation here needs a scope
+// listed in shopify.app.toml, and AGENTS.md lists each one with the reason it
+// exists; keep all three in sync when adding one.
 
 /** Admin client for an embedded admin request (a loader or action under /app). */
 export async function adminForRequest(
@@ -718,4 +718,198 @@ export async function getOrder(
       : null;
   }
   return { ...order, lineItems };
+}
+
+/** A carrier service as the app reads it back. */
+export interface ShopifyCarrierService {
+  /** GID, e.g. `gid://shopify/DeliveryCarrierService/123`. */
+  id: string;
+  name: string | null;
+  callbackUrl: string | null;
+  active: boolean;
+}
+
+/** A mutation's `userErrors`, flattened to messages. */
+export type MutationResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; errors: string[] };
+
+const CARRIER_SERVICE_FIELDS = `
+  id
+  name
+  callbackUrl
+  active`;
+
+const CARRIER_SERVICES_QUERY = `#graphql
+  query HikyakuCarrierServices($first: Int!, $after: String) {
+    carrierServices(first: $first, after: $after) {
+      nodes {${CARRIER_SERVICE_FIELDS}
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }`;
+
+/**
+ * The shop's carrier services, to find the app's own again. Scope:
+ * `read_shipping` (implied by `write_shipping`).
+ */
+export async function listCarrierServices(
+  admin: AdminApiContext,
+): Promise<ShopifyCarrierService[]> {
+  const services: ShopifyCarrierService[] = [];
+  let after: string | null = null;
+  do {
+    const data: { carrierServices: Connection<ShopifyCarrierService> } =
+      await query(admin, CARRIER_SERVICES_QUERY, { first: PAGE_SIZE, after });
+    services.push(...data.carrierServices.nodes);
+    after = data.carrierServices.pageInfo.hasNextPage
+      ? data.carrierServices.pageInfo.endCursor
+      : null;
+  } while (after);
+  return services;
+}
+
+const CARRIER_SERVICE_QUERY = `#graphql
+  query HikyakuCarrierService($id: ID!) {
+    carrierService(id: $id) {${CARRIER_SERVICE_FIELDS}
+    }
+  }`;
+
+/** One carrier service by GID, or null if it's gone. Scope: `read_shipping`. */
+export async function getCarrierService(
+  admin: AdminApiContext,
+  id: string,
+): Promise<ShopifyCarrierService | null> {
+  const data: { carrierService: ShopifyCarrierService | null } = await query(
+    admin,
+    CARRIER_SERVICE_QUERY,
+    { id },
+  );
+  return data.carrierService;
+}
+
+interface UserError {
+  field: string[] | null;
+  message: string;
+}
+
+function mutationResult<T>(
+  payload: { userErrors: UserError[] } & Record<string, unknown>,
+  value: T | null | undefined,
+): MutationResult<T> {
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      errors: payload.userErrors.map((error) => error.message),
+    };
+  }
+  if (value === null || value === undefined) {
+    return { ok: false, errors: ["Shopify returned no result"] };
+  }
+  return { ok: true, data: value };
+}
+
+const CARRIER_SERVICE_CREATE_MUTATION = `#graphql
+  mutation HikyakuCarrierServiceCreate(
+    $input: DeliveryCarrierServiceCreateInput!
+  ) {
+    carrierServiceCreate(input: $input) {
+      carrierService {${CARRIER_SERVICE_FIELDS}
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+export interface CarrierServiceInput {
+  name: string;
+  callbackUrl: string;
+  active: boolean;
+}
+
+/**
+ * Registers a carrier service whose callback Shopify calls at checkout.
+ * Shopify refuses it (userErrors) on a plan without third-party
+ * carrier-calculated shipping. Scope: `write_shipping`.
+ */
+export async function createCarrierService(
+  admin: AdminApiContext,
+  input: CarrierServiceInput,
+): Promise<MutationResult<ShopifyCarrierService>> {
+  const data: {
+    carrierServiceCreate: {
+      carrierService: ShopifyCarrierService | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, CARRIER_SERVICE_CREATE_MUTATION, {
+    input: { ...input, supportsServiceDiscovery: true },
+  });
+  return mutationResult(
+    data.carrierServiceCreate,
+    data.carrierServiceCreate.carrierService,
+  );
+}
+
+const CARRIER_SERVICE_UPDATE_MUTATION = `#graphql
+  mutation HikyakuCarrierServiceUpdate(
+    $input: DeliveryCarrierServiceUpdateInput!
+  ) {
+    carrierServiceUpdate(input: $input) {
+      carrierService {${CARRIER_SERVICE_FIELDS}
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/** Changes a carrier service's name, callback or `active`. Scope: `write_shipping`. */
+export async function updateCarrierService(
+  admin: AdminApiContext,
+  id: string,
+  input: Partial<CarrierServiceInput>,
+): Promise<MutationResult<ShopifyCarrierService>> {
+  const data: {
+    carrierServiceUpdate: {
+      carrierService: ShopifyCarrierService | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, CARRIER_SERVICE_UPDATE_MUTATION, {
+    input: { id, ...input },
+  });
+  return mutationResult(
+    data.carrierServiceUpdate,
+    data.carrierServiceUpdate.carrierService,
+  );
+}
+
+const CARRIER_SERVICE_DELETE_MUTATION = `#graphql
+  mutation HikyakuCarrierServiceDelete($id: ID!) {
+    carrierServiceDelete(id: $id) {
+      deletedId
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/** Removes a carrier service. Scope: `write_shipping`. */
+export async function deleteCarrierService(
+  admin: AdminApiContext,
+  id: string,
+): Promise<MutationResult<string>> {
+  const data: {
+    carrierServiceDelete: { deletedId: string | null; userErrors: UserError[] };
+  } = await query(admin, CARRIER_SERVICE_DELETE_MUTATION, { id });
+  return mutationResult(
+    data.carrierServiceDelete,
+    data.carrierServiceDelete.deletedId,
+  );
 }
