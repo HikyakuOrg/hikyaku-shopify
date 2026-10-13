@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Session as SessionRow } from "@prisma/client";
+import type { Session as SessionRow } from "../generated/prisma/client";
 import { Session } from "@shopify/shopify-app-react-router/server";
 
 // VaultSessionStorage over an in-memory Session table and Vault, so this

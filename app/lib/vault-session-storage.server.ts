@@ -1,4 +1,4 @@
-import type { Prisma, Session as SessionRow } from "@prisma/client";
+import type { Prisma, Session as SessionRow } from "../generated/prisma/client";
 import { Session } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import {
