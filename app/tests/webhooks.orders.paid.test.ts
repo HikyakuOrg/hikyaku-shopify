@@ -348,7 +348,8 @@ describe("orders/paid webhook", () => {
       const response = await callAction();
 
       expect(response.status).toBe(200);
-      expect(postedEvent().shipping_rate).toBeNull();
+      // Left out, not null: an older hikyaku-api rejects unknown fields.
+      expect(postedEvent()).not.toHaveProperty("shipping_rate");
     });
   });
 });

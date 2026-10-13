@@ -144,9 +144,11 @@ export interface OrderPaidEvent {
   /**
    * The Hikyaku rate the shopper chose at checkout, with what it cost. Set
    * only when the shop has Hikyaku rates on, which is also the only time an
-   * order is sent with one (see findHikyakuShippingLine); null otherwise.
+   * order is sent with one (see findHikyakuShippingLine); left out
+   * otherwise, so the event stays valid for a hikyaku-api that doesn't know
+   * the field (it rejects unknown properties).
    */
-  shipping_rate: ShippingRateChoice | null;
+  shipping_rate?: ShippingRateChoice;
 }
 
 /**
@@ -308,7 +310,7 @@ export function buildOrderPaidEvent(params: {
       instructions: payload.note,
     },
     fulfillment_groups: fulfillmentGroups,
-    shipping_rate: params.shippingRate ?? null,
+    ...(params.shippingRate ? { shipping_rate: params.shippingRate } : {}),
   };
 }
 
