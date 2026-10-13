@@ -15,6 +15,9 @@ vi.mock("../lib/hikyaku-api.server", () => ({
   getValidAccessToken: vi.fn(),
   postOrderEvent: vi.fn(),
 }));
+vi.mock("../lib/shipping-rates.server", () => ({
+  rateForwarding: vi.fn(),
+}));
 vi.mock("../lib/shopify-admin.server", () => ({
   adminForShop: vi.fn(),
   getFulfillmentOrderOrder: vi.fn(),
@@ -25,6 +28,7 @@ const { getConnection, getValidAccessToken, postOrderEvent } =
   await import("../lib/hikyaku-api.server");
 const { adminForShop, getFulfillmentOrderOrder } =
   await import("../lib/shopify-admin.server");
+const { rateForwarding } = await import("../lib/shipping-rates.server");
 const { action } = await import("../routes/webhooks.fulfillment_orders");
 
 const SHOP = "example.myshopify.com";
@@ -110,12 +114,17 @@ beforeEach(() => {
     {} as Awaited<ReturnType<typeof adminForShop>>,
   );
   vi.mocked(postOrderEvent).mockResolvedValue({ ok: true });
+  vi.mocked(rateForwarding).mockResolvedValue({
+    enabled: false,
+    staticRates: new Map(),
+  });
 });
 
 describe("fulfillment_orders/* webhook", () => {
   it("sends the order's routing now, releasing the fulfillment order moved out of", async () => {
     vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
       order: ORDER,
+      shippingLines: [],
       fulfillmentOrders: [
         fulfillmentOrder(1, 101, [[11, 2]], "CLOSED"),
         fulfillmentOrder(2, 102, [[11, 2]]),
@@ -172,6 +181,7 @@ describe("fulfillment_orders/* webhook", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
         order: ORDER,
+        shippingLines: [],
         fulfillmentOrders: [fulfillmentOrder(2, 102, [[11, 2]])],
       });
 
@@ -190,6 +200,7 @@ describe("fulfillment_orders/* webhook", () => {
     });
     vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
       order: ORDER,
+      shippingLines: [],
       fulfillmentOrders: [fulfillmentOrder(1, 101, [[11, 2]], "CANCELLED")],
     });
 
@@ -208,6 +219,7 @@ describe("fulfillment_orders/* webhook", () => {
     });
     vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
       order: ORDER,
+      shippingLines: [],
       fulfillmentOrders: [
         fulfillmentOrder(1, 101, [[11, 1]], "CLOSED"),
         fulfillmentOrder(4, 101, [[11, 1]]),
@@ -255,6 +267,7 @@ describe("fulfillment_orders/* webhook", () => {
   it("returns 500 without sending while routing isn't settled", async () => {
     vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
       order: ORDER,
+      shippingLines: [],
       fulfillmentOrders: [fulfillmentOrder(2, 102, [[11, 2]], "SOMETHING_NEW")],
     });
 
@@ -267,6 +280,7 @@ describe("fulfillment_orders/* webhook", () => {
   it("returns 500 when hikyaku-api asks for a retry, 200 when it rejects the event", async () => {
     vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
       order: ORDER,
+      shippingLines: [],
       fulfillmentOrders: [fulfillmentOrder(2, 102, [[11, 2]])],
     });
     vi.mocked(postOrderEvent).mockResolvedValueOnce({
@@ -282,5 +296,40 @@ describe("fulfillment_orders/* webhook", () => {
       detail: "HTTP 400",
     });
     expect((await callAction()).status).toBe(200);
+  });
+
+  describe("with Hikyaku rates on", () => {
+    beforeEach(() => {
+      vi.mocked(rateForwarding).mockResolvedValue({
+        enabled: true,
+        staticRates: new Map(),
+      });
+    });
+
+    it("skips an order that didn't choose a Hikyaku rate, since Hikyaku never got it", async () => {
+      vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
+        order: ORDER,
+        shippingLines: [{ title: "Express", code: "Express" }],
+        fulfillmentOrders: [fulfillmentOrder(2, 102, [[11, 2]])],
+      });
+
+      const response = await callAction();
+
+      expect(response.status).toBe(200);
+      expect(postOrderEvent).not.toHaveBeenCalled();
+    });
+
+    it("sends an order that chose one", async () => {
+      vi.mocked(getFulfillmentOrderOrder).mockResolvedValue({
+        order: ORDER,
+        shippingLines: [{ title: "Hikyaku Same Day", code: "hikyaku:svc_1" }],
+        fulfillmentOrders: [fulfillmentOrder(2, 102, [[11, 2]])],
+      });
+
+      const response = await callAction();
+
+      expect(response.status).toBe(200);
+      expect(postedEvent().order).toEqual(ORDER);
+    });
   });
 });

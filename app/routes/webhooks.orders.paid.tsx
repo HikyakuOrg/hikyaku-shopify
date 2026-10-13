@@ -12,6 +12,11 @@ import {
 } from "../lib/order-event.server";
 import { buildFulfillmentGroups } from "../lib/fulfillment-groups";
 import {
+  findHikyakuShippingLine,
+  type ShippingRateChoice,
+} from "../lib/hikyaku-shipping-line";
+import { rateForwarding } from "../lib/shipping-rates.server";
+import {
   adminForShop,
   getOrderFulfillmentOrders,
   type ShopifyFulfillmentOrder,
@@ -46,6 +51,23 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   const order = payload as unknown as ShopifyOrderPaidPayload;
+
+  // With Hikyaku rates on at checkout, Hikyaku delivers only the orders that
+  // chose one; the others ship some other way. Without them, every order goes.
+  const forwarding = await rateForwarding(shop);
+  let shippingRate: ShippingRateChoice | null = null;
+  if (forwarding.enabled) {
+    shippingRate = findHikyakuShippingLine(order.shipping_lines, {
+      shopCurrency: order.currency,
+      staticRates: forwarding.staticRates,
+    });
+    if (!shippingRate) {
+      console.log(
+        `Skipping orders/paid for ${shop} (${webhookId}): ${order.name} didn't choose a Hikyaku rate`,
+      );
+      return new Response();
+    }
+  }
 
   // Which location ships which items. Without it Hikyaku would dispatch the
   // whole order from its nearest warehouse, so any failure here (Admin API
@@ -107,6 +129,7 @@ export async function action({ request }: ActionFunctionArgs) {
     apiVersion,
     payload: order,
     fulfillmentGroups: grouping.groups,
+    shippingRate,
   });
 
   const result = await postOrderEvent(

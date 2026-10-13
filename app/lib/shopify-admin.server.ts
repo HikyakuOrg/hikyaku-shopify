@@ -238,7 +238,13 @@ const FULFILLMENT_ORDER_ORDER_QUERY = `#graphql
     fulfillmentOrder(id: $fulfillmentOrderId) {
       order {
         id
-        name${FULFILLMENT_ORDERS_FIELDS}
+        name
+        shippingLines(first: 5) {
+          nodes {
+            title
+            code
+          }
+        }${FULFILLMENT_ORDERS_FIELDS}
       }
     }
   }`;
@@ -281,13 +287,15 @@ export async function getOrderFulfillmentOrders(
 export interface ShopifyOrderFulfillment {
   /** The order the fulfillment order belongs to. */
   order: { id: string; name: string };
+  /** The order's shipping lines: which rate the shopper chose. */
+  shippingLines: Array<{ title: string; code: string | null }>;
   /** All of that order's fulfillment orders, as getOrderFulfillmentOrders. */
   fulfillmentOrders: ShopifyFulfillmentOrder[];
 }
 
 /**
- * The order a fulfillment order belongs to, with all of the order's
- * fulfillment orders. Returns null if the fulfillment order doesn't exist.
+ * The order a fulfillment order belongs to, with its shipping lines and all of
+ * its fulfillment orders. Returns null if the fulfillment order doesn't exist.
  * Scopes: `read_orders` + `read_merchant_managed_fulfillment_orders`.
  *
  * @param fulfillmentOrderId FulfillmentOrder GID, as the fulfillment_orders/*
@@ -304,6 +312,7 @@ export async function getFulfillmentOrderOrder(
       order: {
         id: string;
         name: string;
+        shippingLines: { nodes: ShopifyOrderFulfillment["shippingLines"] };
         fulfillmentOrders: Connection<RawFulfillmentOrder>;
       };
     } | null;
@@ -319,14 +328,21 @@ export async function getFulfillmentOrderOrder(
     options.signal,
   );
   if (!data.fulfillmentOrder) return null;
-  const { id, name, fulfillmentOrders } = data.fulfillmentOrder.order;
+  const { id, name, shippingLines, fulfillmentOrders } =
+    data.fulfillmentOrder.order;
   const all = await collectFulfillmentOrders(
     admin,
     id,
     fulfillmentOrders,
     options.signal,
   );
-  return all && { order: { id, name }, fulfillmentOrders: all };
+  return (
+    all && {
+      order: { id, name },
+      shippingLines: shippingLines.nodes,
+      fulfillmentOrders: all,
+    }
+  );
 }
 
 /**
