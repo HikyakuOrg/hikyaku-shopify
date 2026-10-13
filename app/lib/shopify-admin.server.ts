@@ -1398,3 +1398,39 @@ export async function deleteDeliveryCustomization(
     data.deliveryCustomizationDelete.deletedId,
   );
 }
+
+export interface ShopifyShopInfo {
+  currencyCode: string;
+  plan: {
+    publicDisplayName: string;
+    partnerDevelopment: boolean;
+    shopifyPlus: boolean;
+  };
+}
+
+const SHOP_INFO_QUERY = `#graphql
+  query HikyakuShopInfo {
+    shop {
+      currencyCode
+      plan {
+        publicDisplayName
+        partnerDevelopment
+        shopifyPlus
+      }
+    }
+  }`;
+
+/**
+ * The shop's currency (Hikyaku rates are priced in it) and plan (whether it
+ * can use a carrier service). Scope: none.
+ */
+export async function getShopInfo(
+  admin: AdminApiContext,
+): Promise<ShopifyShopInfo> {
+  const data: { shop: ShopifyShopInfo } = await query(
+    admin,
+    SHOP_INFO_QUERY,
+    {},
+  );
+  return data.shop;
+}
