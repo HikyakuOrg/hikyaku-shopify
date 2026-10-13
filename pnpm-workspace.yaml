@@ -1,3 +1,9 @@
+# The app at the root, plus each extension under extensions/ (the Shopify
+# CLI builds a Function from its own package.json and node_modules).
+packages:
+  - "."
+  - "extensions/*"
+
 # Only resolve versions published at least 7 days ago (in minutes). Hijacked
 # releases are usually caught and pulled within hours to days. To take an
 # urgent fix sooner, add the package to minimumReleaseAgeExclude.

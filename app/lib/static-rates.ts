@@ -401,10 +401,13 @@ export function toGrams(value: number, unit: string): number {
 /**
  * The Function's map of the app's method definitions: each name to the
  * service it belongs to, the name to show instead, and its distance band in
- * km. Written to the delivery customization's `rates` metafield.
+ * km, plus the currency they're priced in. Written to the delivery
+ * customization's `rates` metafield.
  */
 export interface FunctionRates {
   v: 1;
+  /** The shop currency the rates are priced in. */
+  c: string;
   r: Record<
     string,
     { s: string; n: string; k: "f" | "d" | "w"; a?: number; b?: number }
@@ -423,7 +426,7 @@ export function functionRates(plan: StaticPlan): FunctionRates {
       ...(kind === "d" ? { a: rate.min_km ?? 0, b: rate.max_km ?? 0 } : {}),
     };
   }
-  return { v: 1, r };
+  return { v: 1, c: plan.currency, r };
 }
 
 /** Method name → rate code, for recognising a static rate on an order. */

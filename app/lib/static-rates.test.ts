@@ -498,6 +498,7 @@ describe("functionRates and staticRateCodes", () => {
   it("map each method name to its service, display name and band", () => {
     expect(functionRates(plan)).toEqual({
       v: 1,
+      c: "AUD",
       r: {
         "Hikyaku · Same Day": { s: "flat1", n: "Same Day", k: "f" },
         "Hikyaku · Standard · 0–5 km": {
