@@ -19,6 +19,7 @@ import {
   type HikyakuOrganisation,
 } from "../lib/hikyaku-api.server";
 import { createAuthorizationRequest } from "../lib/hikyaku-oauth.server";
+import { removeCarrierService } from "../lib/carrier-service.server";
 import { listLocations, listOrders } from "../lib/shopify-admin.server";
 import { countUnmapped } from "../lib/location-mapping";
 import {
@@ -172,7 +173,7 @@ type ActionData = { authorizeUrl: string } | { ok: true } | { error: string };
 export async function action({
   request,
 }: ActionFunctionArgs): Promise<ActionData> {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
@@ -207,6 +208,20 @@ export async function action({
   }
 
   if (intent === "disconnect") {
+    // Without a Hikyaku connection nothing answers the carrier service's
+    // callback, so its rates go first. A failure only leaves a rate that
+    // checkout can't get, so it doesn't block disconnecting.
+    const removed = await removeCarrierService(admin, shop).catch(
+      (error: unknown) => ({
+        ok: false as const,
+        errors: [error instanceof Error ? error.message : String(error)],
+      }),
+    );
+    if (!removed.ok) {
+      console.error(
+        `Removing the Hikyaku carrier service failed for ${shop}: ${removed.errors.join("; ")}`,
+      );
+    }
     await disconnect(shop);
     return { ok: true };
   }

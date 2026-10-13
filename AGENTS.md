@@ -58,7 +58,7 @@ All in `app/lib/hikyaku-api.server.ts`, with the shop's Hikyaku bearer token and
 
 ## Admin API usage
 
-The app makes a small, fixed set of read-only Admin GraphQL queries, all in `app/lib/shopify-admin.server.ts`. Get a client with `adminForRequest(request)` (embedded admin loaders/actions, via `authenticate.admin`) or `adminForShop(shop)` (webhook handlers and other work with no admin session, via `unauthenticated.admin` and the shop's offline session). Adding a query means adding its scope to `shopify.app.toml` and a line here.
+The app makes a small, fixed set of Admin GraphQL queries and mutations, all in `app/lib/shopify-admin.server.ts`. Get a client with `adminForRequest(request)` (embedded admin loaders/actions, via `authenticate.admin`) or `adminForShop(shop)` (webhook handlers and other work with no admin session, via `unauthenticated.admin` and the shop's offline session). Adding a query means adding its scope to `shopify.app.toml` and a line here.
 
 | Query | Function | Scopes | Why |
 | --- | --- | --- | --- |
@@ -69,8 +69,12 @@ The app makes a small, fixed set of read-only Admin GraphQL queries, all in `app
 | `orders` (open, paid, still to ship): id, name, processedAt, statuses, total, customer displayName, shipping name/city/province/country | `listOrders` | `read_orders` | Orders screen list and the Home banner's count of earlier orders. |
 | `order`: the fields of the orders/paid payload (totals, tags, note, email, customer, shipping address, shipping lines, line items) | `getOrder` | `read_orders` | Sends an earlier order to Hikyaku as its order.paid (Orders screen). |
 | `currentAppInstallation`: id | `isAppInstalled` | none | Whether an `app/uninstalled` delivery arrived after a reinstall (Shopify retries for hours), so the new install isn't cleaned up. |
+| `carrierServices`, `carrierService`: id, name, callbackUrl, active | `listCarrierServices`, `getCarrierService` | `read_shipping` (implied by `write_shipping`) | Finds the app's own carrier service again (stored GID, else our callback URL), so enabling twice never registers a second one. |
+| mutation `carrierServiceCreate` / `carrierServiceUpdate` / `carrierServiceDelete` | `createCarrierService`, `updateCarrierService`, `deleteCarrierService` | `write_shipping` | Live path of Hikyaku rates at checkout (HIK-206): Shopify calls hikyaku-api's rate endpoint for each checkout. |
 
-No REST calls and no mutations. Fulfillment order queries deliberately skip `destination`: the delivery address already arrives in `orders/paid` (or, for an earlier order, `getOrder`).
+No REST calls. The only mutations are the carrier service ones above.
+
+**Carrier service** (`app/lib/carrier-service.server.ts`, pure parts in `carrier-service.ts`): `ensureCarrierService(admin, shop, { active })` creates the shop's one Hikyaku carrier service (name "Hikyaku", service discovery on) or reuses it, changing only what differs; `removeCarrierService` deletes it. Its GID is kept in the `ShippingRates` Prisma model, the app's record of what Hikyaku rates set up in the shop (whether rates are on, the path, GIDs, the last setup error); which services are offered lives in hikyaku-api. The callback is `HIKYAKU_API_URL` + `/api/v1/integrations/shopify/carrier-rates`, or `HIKYAKU_CARRIER_CALLBACK_URL` when set (development, where the API is on localhost). hikyaku-api verifies the callback's `X-Shopify-Hmac-Sha256` with this app's client secret. Disconnecting Hikyaku on Home removes the carrier service first (a failure is logged, not blocking), and `disconnect` deletes the `ShippingRates` row, so `app/uninstalled` and `shop/redact` clear it too; Shopify drops an uninstalled app's carrier service itself. Fulfillment order queries deliberately skip `destination`: the delivery address already arrives in `orders/paid` (or, for an earlier order, `getOrder`).
 
 **Level 2 protected customer data.** Name/address/phone/email arrive on the `orders/paid` payload, and `read_merchant_managed_fulfillment_orders` can also read the same destination address on fulfillment orders (not queried, see above). Publishing requires Level 2 approval in the Dev Dashboard; development stores work without it.
 
