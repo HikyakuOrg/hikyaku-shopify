@@ -336,11 +336,13 @@ export default function Index() {
           </s-paragraph>
           <s-paragraph>
             Each store location ships from one of your Hikyaku warehouses, or
-            isn&apos;t delivered by Hikyaku at all.
+            isn&apos;t delivered by Hikyaku at all. Your Hikyaku services can
+            also be offered as shipping rates at checkout.
           </s-paragraph>
           <s-stack direction="inline" gap="base" alignItems="center">
             <s-button href="/app/locations">Map locations</s-button>
             <s-button href="/app/orders">Add earlier orders</s-button>
+            <s-button href="/app/shipping-rates">Shipping rates</s-button>
             <fetcher.Form method="post">
               <input type="hidden" name="intent" value="disconnect" />
               <s-button
