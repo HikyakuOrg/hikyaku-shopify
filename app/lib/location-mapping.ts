@@ -41,9 +41,24 @@ export interface IntegrationLocationInput {
   external_location_id: string;
   external_location_name?: string | null;
   country_code?: string | null;
+  /**
+   * The location's street address. hikyaku-api matches a carrier service
+   * callback's origin, which carries only an address, against it. Omit to
+   * keep the stored one.
+   */
+  address?: IntegrationLocationAddress | null;
   /** Omit to keep the stored mode and warehouse (a new location starts `unmapped`). */
   mode?: LocationMappingMode;
   warehouse_id?: string | null;
+}
+
+export interface IntegrationLocationAddress {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  province_code: string | null;
+  zip: string | null;
+  country_code: string | null;
 }
 
 /** The subset of a Shopify location these helpers need. */
@@ -53,6 +68,11 @@ export interface MappableLocation {
   isActive: boolean;
   fulfillsOnlineOrders: boolean;
   address: {
+    address1?: string | null;
+    address2?: string | null;
+    city?: string | null;
+    provinceCode?: string | null;
+    zip?: string | null;
     countryCode: string | null;
     latitude: number | null;
     longitude: number | null;
@@ -236,18 +256,27 @@ export function suggestWarehouse(
 }
 
 /**
- * A location as the sync sends it: name and country only, no `mode`, so
+ * A location as the sync sends it: name, country and address, no `mode`, so
  * whatever the merchant chose for it stays as it is.
  */
 export function syncInput(
   location: MappableLocation,
 ): IntegrationLocationInput {
+  const countryCode = location.address.countryCode
+    ? location.address.countryCode.toUpperCase()
+    : null;
   return {
     external_location_id: location.id,
     external_location_name: location.name ?? null,
-    country_code: location.address.countryCode
-      ? location.address.countryCode.toUpperCase()
-      : null,
+    country_code: countryCode,
+    address: {
+      address1: location.address.address1 ?? null,
+      address2: location.address.address2 ?? null,
+      city: location.address.city ?? null,
+      province_code: location.address.provinceCode ?? null,
+      zip: location.address.zip ?? null,
+      country_code: countryCode,
+    },
   };
 }
 

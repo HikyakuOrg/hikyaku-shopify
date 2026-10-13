@@ -201,10 +201,43 @@ describe("mapping values", () => {
 });
 
 describe("syncInput", () => {
-  it("sends name and country but no mode", () => {
-    expect(syncInput({ ...berlin, name: "Berlin" })).toEqual({
+  it("sends name, country and address but no mode", () => {
+    expect(
+      syncInput({
+        ...berlin,
+        name: "Berlin",
+        address: {
+          ...berlin.address,
+          address1: "Unter den Linden 1",
+          address2: null,
+          city: "Berlin",
+          provinceCode: "BE",
+          zip: "10117",
+          countryCode: "de",
+        },
+      }),
+    ).toEqual({
       external_location_id: "berlin",
       external_location_name: "Berlin",
+      country_code: "DE",
+      address: {
+        address1: "Unter den Linden 1",
+        address2: null,
+        city: "Berlin",
+        province_code: "BE",
+        zip: "10117",
+        country_code: "DE",
+      },
+    });
+  });
+
+  it("sends missing address fields as null", () => {
+    expect(syncInput(berlin).address).toEqual({
+      address1: null,
+      address2: null,
+      city: null,
+      province_code: null,
+      zip: null,
       country_code: "DE",
     });
   });
