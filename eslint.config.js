@@ -22,6 +22,8 @@ export default tseslint.config(
       "public/build/**",
       ".shopify/**",
       "app/generated/**",
+      "extensions/*/dist/**",
+      "extensions/*/generated/**",
     ],
   },
   js.configs.recommended,

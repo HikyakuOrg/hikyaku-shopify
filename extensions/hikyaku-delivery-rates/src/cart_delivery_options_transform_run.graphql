@@ -1,0 +1,32 @@
+query CartDeliveryOptionsTransformRunInput {
+  presentmentCurrencyRate
+  cart {
+    cost {
+      totalAmount {
+        currencyCode
+      }
+    }
+    deliveryGroups {
+      deliveryAddress {
+        latitude
+        longitude
+      }
+      deliveryOptions {
+        handle
+        title
+        code
+        cost {
+          amount
+        }
+      }
+    }
+  }
+  deliveryCustomization {
+    coverage: metafield(namespace: "$app:hikyaku", key: "coverage") {
+      jsonValue
+    }
+    rates: metafield(namespace: "$app:hikyaku", key: "rates") {
+      jsonValue
+    }
+  }
+}

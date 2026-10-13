@@ -1,0 +1,24 @@
+api_version = "2026-07"
+
+# Static path of Hikyaku rates at checkout (HIK-215): keeps the Hikyaku rate
+# that fits the address and hides the rest. The app turns it on (as the
+# "Hikyaku rates" delivery customization) only for shops without
+# carrier-calculated shipping. See AGENTS.md.
+[[extensions]]
+name = "t:name"
+handle = "hikyaku-delivery-rates"
+type = "function"
+description = "t:description"
+
+  [[extensions.targeting]]
+  target = "cart.delivery-options.transform.run"
+  input_query = "src/cart_delivery_options_transform_run.graphql"
+  export = "cart-delivery-options-transform-run"
+
+  [extensions.build]
+  command = ""
+  path = "dist/function.wasm"
+
+  [extensions.ui.paths]
+  create = "/"
+  details = "/"
