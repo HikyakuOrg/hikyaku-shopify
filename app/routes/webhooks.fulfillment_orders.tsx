@@ -7,6 +7,8 @@ import {
 } from "../lib/hikyaku-api.server";
 import { buildOrderFulfillmentUpdatedEvent } from "../lib/order-event.server";
 import { buildFulfillmentGroups } from "../lib/fulfillment-groups";
+import { findHikyakuShippingLine } from "../lib/hikyaku-shipping-line";
+import { rateForwarding } from "../lib/shipping-rates.server";
 import {
   readFulfillmentOrderChange,
   type FulfillmentOrderWebhookPayload,
@@ -91,6 +93,22 @@ export async function action({ request }: ActionFunctionArgs) {
       `Fulfillment orders ${change.lookupIds.join(", ")} not found for ${shop} (${webhookId})`,
     );
     return new Response("Fulfillment order not found", { status: 500 });
+  }
+
+  // With Hikyaku rates on, orders/paid only sent the orders that chose one,
+  // so Hikyaku has no other order to update.
+  const forwarding = await rateForwarding(shop);
+  if (
+    forwarding.enabled &&
+    !findHikyakuShippingLine(
+      found.shippingLines.map((line) => ({ ...line, price: "0" })),
+      { shopCurrency: "", staticRates: forwarding.staticRates },
+    )
+  ) {
+    console.log(
+      `Skipping ${topic} for ${shop} (${webhookId}): ${found.order.name} didn't choose a Hikyaku rate`,
+    );
+    return new Response();
   }
 
   const grouping = buildFulfillmentGroups(found.fulfillmentOrders, null);
