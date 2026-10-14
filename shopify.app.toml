@@ -17,7 +17,13 @@ name = "Hikyaku Connect"
 # fulfillment orders expose the same destination address, though the app
 # doesn't query it) requires approval in the Dev Dashboard before this app can
 # be published; development stores work without approval.
-scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders"
+# write_shipping: Hikyaku rates at checkout (HIK-206). The live path
+# registers a carrier service (carrierServiceCreate/Update/Delete); the static
+# path writes Hikyaku rates into the delivery profiles (deliveryProfileUpdate).
+# write_delivery_customizations: the static path's delivery customization
+# Function, which keeps the Hikyaku rate that fits the address and hides the
+# rest.
+scopes = "read_orders,read_locations,read_merchant_managed_fulfillment_orders,write_shipping,write_delivery_customizations"
 use_legacy_install_flow = false
 
 [webhooks]
@@ -62,6 +68,13 @@ api_version = "2026-07"
     "fulfillment_orders/cancelled",
     "fulfillment_orders/scheduled_fulfillment_order_ready",
   ]
+
+  # With Hikyaku rates on at checkout, a plan change can switch the shop
+  # between the carrier service and static rates, and a currency change
+  # reprices them (HIK-217).
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/update"
+  topics = [ "shop/update" ]
 
   # Mandatory for any published app — see
   # https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance.

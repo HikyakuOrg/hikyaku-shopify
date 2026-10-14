@@ -19,6 +19,7 @@ import {
   type HikyakuOrganisation,
 } from "../lib/hikyaku-api.server";
 import { createAuthorizationRequest } from "../lib/hikyaku-oauth.server";
+import { removeHikyakuRates } from "../lib/shipping-rates.server";
 import { listLocations, listOrders } from "../lib/shopify-admin.server";
 import { countUnmapped } from "../lib/location-mapping";
 import {
@@ -172,7 +173,7 @@ type ActionData = { authorizeUrl: string } | { ok: true } | { error: string };
 export async function action({
   request,
 }: ActionFunctionArgs): Promise<ActionData> {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
@@ -207,6 +208,16 @@ export async function action({
   }
 
   if (intent === "disconnect") {
+    // Without a Hikyaku connection nothing answers the carrier service's
+    // callback or keeps static rates in sync, so Hikyaku rates leave checkout
+    // first. A failure is logged, not blocking: the merchant asked to
+    // disconnect, and the Shipping rates screen can't help once they have.
+    const errors = await removeHikyakuRates(admin, shop);
+    if (errors.length > 0) {
+      console.error(
+        `Removing Hikyaku rates failed for ${shop}: ${errors.join("; ")}`,
+      );
+    }
     await disconnect(shop);
     return { ok: true };
   }
@@ -325,11 +336,13 @@ export default function Index() {
           </s-paragraph>
           <s-paragraph>
             Each store location ships from one of your Hikyaku warehouses, or
-            isn&apos;t delivered by Hikyaku at all.
+            isn&apos;t delivered by Hikyaku at all. Your Hikyaku services can
+            also be offered as shipping rates at checkout.
           </s-paragraph>
           <s-stack direction="inline" gap="base" alignItems="center">
             <s-button href="/app/locations">Map locations</s-button>
             <s-button href="/app/orders">Add earlier orders</s-button>
+            <s-button href="/app/shipping-rates">Shipping rates</s-button>
             <fetcher.Form method="post">
               <input type="hidden" name="intent" value="disconnect" />
               <s-button

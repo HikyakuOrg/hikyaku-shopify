@@ -1,9 +1,17 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import { authenticate, unauthenticated } from "../shopify.server";
+import {
+  toGrams,
+  type CurrentLocationGroup,
+  type CurrentMethod,
+  type CurrentProfile,
+  type CurrentZone,
+  type ProfileInput,
+} from "./static-rates";
 
-// The app's only Admin API reads. Every query here needs a scope listed in
-// shopify.app.toml, and AGENTS.md lists each one with the reason it exists;
-// keep all three in sync when adding a query.
+// The app's Admin API calls. Every query and mutation here needs a scope
+// listed in shopify.app.toml, and AGENTS.md lists each one with the reason it
+// exists; keep all three in sync when adding one.
 
 /** Admin client for an embedded admin request (a loader or action under /app). */
 export async function adminForRequest(
@@ -238,7 +246,13 @@ const FULFILLMENT_ORDER_ORDER_QUERY = `#graphql
     fulfillmentOrder(id: $fulfillmentOrderId) {
       order {
         id
-        name${FULFILLMENT_ORDERS_FIELDS}
+        name
+        shippingLines(first: 5) {
+          nodes {
+            title
+            code
+          }
+        }${FULFILLMENT_ORDERS_FIELDS}
       }
     }
   }`;
@@ -281,13 +295,15 @@ export async function getOrderFulfillmentOrders(
 export interface ShopifyOrderFulfillment {
   /** The order the fulfillment order belongs to. */
   order: { id: string; name: string };
+  /** The order's shipping lines: which rate the shopper chose. */
+  shippingLines: Array<{ title: string; code: string | null }>;
   /** All of that order's fulfillment orders, as getOrderFulfillmentOrders. */
   fulfillmentOrders: ShopifyFulfillmentOrder[];
 }
 
 /**
- * The order a fulfillment order belongs to, with all of the order's
- * fulfillment orders. Returns null if the fulfillment order doesn't exist.
+ * The order a fulfillment order belongs to, with its shipping lines and all of
+ * its fulfillment orders. Returns null if the fulfillment order doesn't exist.
  * Scopes: `read_orders` + `read_merchant_managed_fulfillment_orders`.
  *
  * @param fulfillmentOrderId FulfillmentOrder GID, as the fulfillment_orders/*
@@ -304,6 +320,7 @@ export async function getFulfillmentOrderOrder(
       order: {
         id: string;
         name: string;
+        shippingLines: { nodes: ShopifyOrderFulfillment["shippingLines"] };
         fulfillmentOrders: Connection<RawFulfillmentOrder>;
       };
     } | null;
@@ -319,14 +336,21 @@ export async function getFulfillmentOrderOrder(
     options.signal,
   );
   if (!data.fulfillmentOrder) return null;
-  const { id, name, fulfillmentOrders } = data.fulfillmentOrder.order;
+  const { id, name, shippingLines, fulfillmentOrders } =
+    data.fulfillmentOrder.order;
   const all = await collectFulfillmentOrders(
     admin,
     id,
     fulfillmentOrders,
     options.signal,
   );
-  return all && { order: { id, name }, fulfillmentOrders: all };
+  return (
+    all && {
+      order: { id, name },
+      shippingLines: shippingLines.nodes,
+      fulfillmentOrders: all,
+    }
+  );
 }
 
 /**
@@ -718,4 +742,695 @@ export async function getOrder(
       : null;
   }
   return { ...order, lineItems };
+}
+
+/** A carrier service as the app reads it back. */
+export interface ShopifyCarrierService {
+  /** GID, e.g. `gid://shopify/DeliveryCarrierService/123`. */
+  id: string;
+  name: string | null;
+  callbackUrl: string | null;
+  active: boolean;
+}
+
+/** A mutation's `userErrors`, flattened to messages. */
+export type MutationResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; errors: string[] };
+
+const CARRIER_SERVICE_FIELDS = `
+  id
+  name
+  callbackUrl
+  active`;
+
+const CARRIER_SERVICES_QUERY = `#graphql
+  query HikyakuCarrierServices($first: Int!, $after: String) {
+    carrierServices(first: $first, after: $after) {
+      nodes {${CARRIER_SERVICE_FIELDS}
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }`;
+
+/**
+ * The shop's carrier services, to find the app's own again. Scope:
+ * `read_shipping` (implied by `write_shipping`).
+ */
+export async function listCarrierServices(
+  admin: AdminApiContext,
+): Promise<ShopifyCarrierService[]> {
+  const services: ShopifyCarrierService[] = [];
+  let after: string | null = null;
+  do {
+    const data: { carrierServices: Connection<ShopifyCarrierService> } =
+      await query(admin, CARRIER_SERVICES_QUERY, { first: PAGE_SIZE, after });
+    services.push(...data.carrierServices.nodes);
+    after = data.carrierServices.pageInfo.hasNextPage
+      ? data.carrierServices.pageInfo.endCursor
+      : null;
+  } while (after);
+  return services;
+}
+
+const CARRIER_SERVICE_QUERY = `#graphql
+  query HikyakuCarrierService($id: ID!) {
+    carrierService(id: $id) {${CARRIER_SERVICE_FIELDS}
+    }
+  }`;
+
+/** One carrier service by GID, or null if it's gone. Scope: `read_shipping`. */
+export async function getCarrierService(
+  admin: AdminApiContext,
+  id: string,
+): Promise<ShopifyCarrierService | null> {
+  const data: { carrierService: ShopifyCarrierService | null } = await query(
+    admin,
+    CARRIER_SERVICE_QUERY,
+    { id },
+  );
+  return data.carrierService;
+}
+
+interface UserError {
+  field: string[] | null;
+  message: string;
+}
+
+function mutationResult<T>(
+  payload: { userErrors: UserError[] } & Record<string, unknown>,
+  value: T | null | undefined,
+): MutationResult<T> {
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      errors: payload.userErrors.map((error) => error.message),
+    };
+  }
+  if (value === null || value === undefined) {
+    return { ok: false, errors: ["Shopify returned no result"] };
+  }
+  return { ok: true, data: value };
+}
+
+const CARRIER_SERVICE_CREATE_MUTATION = `#graphql
+  mutation HikyakuCarrierServiceCreate(
+    $input: DeliveryCarrierServiceCreateInput!
+  ) {
+    carrierServiceCreate(input: $input) {
+      carrierService {${CARRIER_SERVICE_FIELDS}
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+export interface CarrierServiceInput {
+  name: string;
+  callbackUrl: string;
+  active: boolean;
+}
+
+/**
+ * Registers a carrier service whose callback Shopify calls at checkout.
+ * Shopify refuses it (userErrors) on a plan without third-party
+ * carrier-calculated shipping. Scope: `write_shipping`.
+ */
+export async function createCarrierService(
+  admin: AdminApiContext,
+  input: CarrierServiceInput,
+): Promise<MutationResult<ShopifyCarrierService>> {
+  const data: {
+    carrierServiceCreate: {
+      carrierService: ShopifyCarrierService | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, CARRIER_SERVICE_CREATE_MUTATION, {
+    input: { ...input, supportsServiceDiscovery: true },
+  });
+  return mutationResult(
+    data.carrierServiceCreate,
+    data.carrierServiceCreate.carrierService,
+  );
+}
+
+const CARRIER_SERVICE_UPDATE_MUTATION = `#graphql
+  mutation HikyakuCarrierServiceUpdate(
+    $input: DeliveryCarrierServiceUpdateInput!
+  ) {
+    carrierServiceUpdate(input: $input) {
+      carrierService {${CARRIER_SERVICE_FIELDS}
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/** Changes a carrier service's name, callback or `active`. Scope: `write_shipping`. */
+export async function updateCarrierService(
+  admin: AdminApiContext,
+  id: string,
+  input: Partial<CarrierServiceInput>,
+): Promise<MutationResult<ShopifyCarrierService>> {
+  const data: {
+    carrierServiceUpdate: {
+      carrierService: ShopifyCarrierService | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, CARRIER_SERVICE_UPDATE_MUTATION, {
+    input: { id, ...input },
+  });
+  return mutationResult(
+    data.carrierServiceUpdate,
+    data.carrierServiceUpdate.carrierService,
+  );
+}
+
+const CARRIER_SERVICE_DELETE_MUTATION = `#graphql
+  mutation HikyakuCarrierServiceDelete($id: ID!) {
+    carrierServiceDelete(id: $id) {
+      deletedId
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/** Removes a carrier service. Scope: `write_shipping`. */
+export async function deleteCarrierService(
+  admin: AdminApiContext,
+  id: string,
+): Promise<MutationResult<string>> {
+  const data: {
+    carrierServiceDelete: { deletedId: string | null; userErrors: UserError[] };
+  } = await query(admin, CARRIER_SERVICE_DELETE_MUTATION, { id });
+  return mutationResult(
+    data.carrierServiceDelete,
+    data.carrierServiceDelete.deletedId,
+  );
+}
+
+// Delivery profiles: the static path of Hikyaku rates (HIK-216) writes its
+// method definitions into the merchant's own profiles. See static-rates.ts.
+
+const DELIVERY_PROFILES_QUERY = `#graphql
+  query HikyakuDeliveryProfiles($first: Int!, $after: String) {
+    deliveryProfiles(first: $first, after: $after, merchantOwnedOnly: true) {
+      nodes {
+        id
+        name
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }`;
+
+const DELIVERY_PROFILE_GROUPS_QUERY = `#graphql
+  query HikyakuDeliveryProfileGroups($id: ID!) {
+    deliveryProfile(id: $id) {
+      profileLocationGroups {
+        locationGroup {
+          id
+          locations(first: 250, includeInactive: true) {
+            nodes {
+              id
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      }
+    }
+  }`;
+
+// Zones come a few at a time: each carries up to 100 method definitions, and
+// Shopify rejects a query costing over 1000 points.
+const ZONE_PAGE_SIZE = 5;
+const METHOD_PAGE_SIZE = 100;
+
+const DELIVERY_GROUP_ZONES_QUERY = `#graphql
+  query HikyakuDeliveryGroupZones(
+    $id: ID!
+    $groupId: ID!
+    $first: Int!
+    $after: String
+    $methodsFirst: Int!
+  ) {
+    deliveryProfile(id: $id) {
+      profileLocationGroups(locationGroupId: $groupId) {
+        locationGroupZones(first: $first, after: $after) {
+          nodes {
+            zone {
+              id
+              name
+              countries {
+                code {
+                  countryCode
+                  restOfWorld
+                }
+              }
+            }
+            methodDefinitions(first: $methodsFirst, type: MERCHANT) {
+              nodes {
+                id
+                name
+                description
+                active
+                rateProvider {
+                  ... on DeliveryRateDefinition {
+                    price {
+                      amount
+                      currencyCode
+                    }
+                  }
+                }
+                methodConditions {
+                  field
+                  operator
+                  conditionCriteria {
+                    ... on Weight {
+                      unit
+                      value
+                    }
+                  }
+                }
+              }
+              pageInfo {
+                hasNextPage
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  }`;
+
+interface RawMethodDefinition {
+  id: string;
+  name: string;
+  description: string | null;
+  active: boolean;
+  rateProvider: { price?: { amount: string; currencyCode: string } };
+  methodConditions: Array<{
+    field: string;
+    operator: string;
+    conditionCriteria: { unit?: string; value?: number };
+  }>;
+}
+
+interface RawGroupZone {
+  zone: {
+    id: string;
+    name: string;
+    countries: Array<{
+      code: { countryCode: string | null; restOfWorld: boolean };
+    }>;
+  };
+  methodDefinitions: {
+    nodes: RawMethodDefinition[];
+    pageInfo: { hasNextPage: boolean };
+  };
+}
+
+function currentMethod(raw: RawMethodDefinition): CurrentMethod {
+  let weight: CurrentMethod["weight"] = null;
+  for (const condition of raw.methodConditions) {
+    const { unit, value } = condition.conditionCriteria;
+    if (condition.field !== "TOTAL_WEIGHT" || !unit || value === undefined) {
+      continue;
+    }
+    weight ??= { min: null, max: null };
+    const grams = Math.round(toGrams(value, unit) * 1000) / 1000;
+    if (condition.operator === "GREATER_THAN_OR_EQUAL_TO") weight.min = grams;
+    else weight.max = grams;
+  }
+  return {
+    id: raw.id,
+    name: raw.name,
+    description: raw.description,
+    active: raw.active,
+    price: raw.rateProvider.price ?? null,
+    weight,
+  };
+}
+
+/**
+ * The merchant's delivery profiles with, per location group, its locations
+ * and zones (countries and merchant method definitions). Scope:
+ * `read_shipping` (implied by `write_shipping`).
+ */
+export async function listDeliveryProfiles(
+  admin: AdminApiContext,
+): Promise<CurrentProfile[]> {
+  const summaries: Array<{ id: string; name: string }> = [];
+  let after: string | null = null;
+  do {
+    const data: {
+      deliveryProfiles: Connection<{ id: string; name: string }>;
+    } = await query(admin, DELIVERY_PROFILES_QUERY, { first: 50, after });
+    summaries.push(...data.deliveryProfiles.nodes);
+    after = data.deliveryProfiles.pageInfo.hasNextPage
+      ? data.deliveryProfiles.pageInfo.endCursor
+      : null;
+  } while (after);
+
+  const profiles: CurrentProfile[] = [];
+  for (const summary of summaries) {
+    const data: {
+      deliveryProfile: {
+        profileLocationGroups: Array<{
+          locationGroup: { id: string; locations: Connection<{ id: string }> };
+        }>;
+      } | null;
+    } = await query(admin, DELIVERY_PROFILE_GROUPS_QUERY, { id: summary.id });
+    if (!data.deliveryProfile) continue;
+
+    const groups: CurrentLocationGroup[] = [];
+    for (const { locationGroup } of data.deliveryProfile
+      .profileLocationGroups) {
+      if (locationGroup.locations.pageInfo.hasNextPage) {
+        console.warn(
+          `Delivery location group ${locationGroup.id} has more than 250 locations; only the first 250 are considered`,
+        );
+      }
+      groups.push({
+        id: locationGroup.id,
+        locationIds: locationGroup.locations.nodes.map((node) => node.id),
+        zones: await listGroupZones(admin, summary.id, locationGroup.id),
+      });
+    }
+    profiles.push({ id: summary.id, name: summary.name, groups });
+  }
+  return profiles;
+}
+
+async function listGroupZones(
+  admin: AdminApiContext,
+  profileId: string,
+  groupId: string,
+): Promise<CurrentZone[]> {
+  const zones: CurrentZone[] = [];
+  let after: string | null = null;
+  do {
+    const data: {
+      deliveryProfile: {
+        profileLocationGroups: Array<{
+          locationGroupZones: Connection<RawGroupZone>;
+        }>;
+      } | null;
+    } = await query(admin, DELIVERY_GROUP_ZONES_QUERY, {
+      id: profileId,
+      groupId,
+      first: ZONE_PAGE_SIZE,
+      after,
+      methodsFirst: METHOD_PAGE_SIZE,
+    });
+    const page =
+      data.deliveryProfile?.profileLocationGroups[0]?.locationGroupZones;
+    if (!page) break;
+    for (const node of page.nodes) {
+      if (node.methodDefinitions.pageInfo.hasNextPage) {
+        console.warn(
+          `Delivery zone ${node.zone.id} has more than ${METHOD_PAGE_SIZE} method definitions; only the first ${METHOD_PAGE_SIZE} are considered`,
+        );
+      }
+      zones.push({
+        id: node.zone.id,
+        name: node.zone.name,
+        countries: node.zone.countries.map((country) => ({
+          code: country.code.countryCode,
+          restOfWorld: country.code.restOfWorld,
+        })),
+        methods: node.methodDefinitions.nodes.map(currentMethod),
+      });
+    }
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after);
+  return zones;
+}
+
+const DELIVERY_PROFILE_UPDATE_MUTATION = `#graphql
+  mutation HikyakuDeliveryProfileUpdate(
+    $id: ID!
+    $profile: DeliveryProfileInput!
+  ) {
+    deliveryProfileUpdate(id: $id, profile: $profile) {
+      profile {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/**
+ * Applies one delivery profile's changes from planProfileUpdates. Scope:
+ * `write_shipping`.
+ */
+export async function updateDeliveryProfile(
+  admin: AdminApiContext,
+  id: string,
+  profile: ProfileInput,
+): Promise<MutationResult<string>> {
+  const data: {
+    deliveryProfileUpdate: {
+      profile: { id: string } | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, DELIVERY_PROFILE_UPDATE_MUTATION, { id, profile });
+  return mutationResult(
+    data.deliveryProfileUpdate,
+    data.deliveryProfileUpdate.profile?.id,
+  );
+}
+
+/** A delivery customization, with the app's metafields the Function reads. */
+export interface ShopifyDeliveryCustomization {
+  id: string;
+  title: string;
+  enabled: boolean;
+  functionId: string;
+  coverage: { value: string } | null;
+  rates: { value: string } | null;
+}
+
+/** Where the Function's settings live on its delivery customization. */
+export const FUNCTION_METAFIELD_NAMESPACE = "$app:hikyaku";
+
+const DELIVERY_CUSTOMIZATION_FIELDS = `
+  id
+  title
+  enabled
+  functionId
+  coverage: metafield(namespace: "${FUNCTION_METAFIELD_NAMESPACE}", key: "coverage") {
+    value
+  }
+  rates: metafield(namespace: "${FUNCTION_METAFIELD_NAMESPACE}", key: "rates") {
+    value
+  }`;
+
+const DELIVERY_CUSTOMIZATIONS_QUERY = `#graphql
+  query HikyakuDeliveryCustomizations($first: Int!, $after: String) {
+    deliveryCustomizations(first: $first, after: $after) {
+      nodes {${DELIVERY_CUSTOMIZATION_FIELDS}
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }`;
+
+/**
+ * The shop's delivery customizations, to find the app's own again. Scope:
+ * `read_delivery_customizations` (implied by `write_delivery_customizations`).
+ */
+export async function listDeliveryCustomizations(
+  admin: AdminApiContext,
+): Promise<ShopifyDeliveryCustomization[]> {
+  const customizations: ShopifyDeliveryCustomization[] = [];
+  let after: string | null = null;
+  do {
+    const data: {
+      deliveryCustomizations: Connection<ShopifyDeliveryCustomization>;
+    } = await query(admin, DELIVERY_CUSTOMIZATIONS_QUERY, {
+      first: 50,
+      after,
+    });
+    customizations.push(...data.deliveryCustomizations.nodes);
+    after = data.deliveryCustomizations.pageInfo.hasNextPage
+      ? data.deliveryCustomizations.pageInfo.endCursor
+      : null;
+  } while (after);
+  return customizations;
+}
+
+const DELIVERY_CUSTOMIZATION_CREATE_MUTATION = `#graphql
+  mutation HikyakuDeliveryCustomizationCreate(
+    $input: DeliveryCustomizationInput!
+  ) {
+    deliveryCustomizationCreate(deliveryCustomization: $input) {
+      deliveryCustomization {${DELIVERY_CUSTOMIZATION_FIELDS}
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+export interface DeliveryCustomizationInput {
+  functionHandle?: string;
+  title?: string;
+  enabled?: boolean;
+  metafields?: Array<{
+    namespace: string;
+    key: string;
+    type: "json";
+    value: string;
+  }>;
+}
+
+/**
+ * Activates the app's delivery customization Function for the shop. Scope:
+ * `write_delivery_customizations`.
+ */
+export async function createDeliveryCustomization(
+  admin: AdminApiContext,
+  input: DeliveryCustomizationInput,
+): Promise<MutationResult<ShopifyDeliveryCustomization>> {
+  const data: {
+    deliveryCustomizationCreate: {
+      deliveryCustomization: ShopifyDeliveryCustomization | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, DELIVERY_CUSTOMIZATION_CREATE_MUTATION, { input });
+  return mutationResult(
+    data.deliveryCustomizationCreate,
+    data.deliveryCustomizationCreate.deliveryCustomization,
+  );
+}
+
+const DELIVERY_CUSTOMIZATION_UPDATE_MUTATION = `#graphql
+  mutation HikyakuDeliveryCustomizationUpdate(
+    $id: ID!
+    $input: DeliveryCustomizationInput!
+  ) {
+    deliveryCustomizationUpdate(id: $id, deliveryCustomization: $input) {
+      deliveryCustomization {${DELIVERY_CUSTOMIZATION_FIELDS}
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/**
+ * Changes the delivery customization (enabled, its metafields). Scope:
+ * `write_delivery_customizations`.
+ */
+export async function updateDeliveryCustomization(
+  admin: AdminApiContext,
+  id: string,
+  input: DeliveryCustomizationInput,
+): Promise<MutationResult<ShopifyDeliveryCustomization>> {
+  const data: {
+    deliveryCustomizationUpdate: {
+      deliveryCustomization: ShopifyDeliveryCustomization | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, DELIVERY_CUSTOMIZATION_UPDATE_MUTATION, {
+    id,
+    input,
+  });
+  return mutationResult(
+    data.deliveryCustomizationUpdate,
+    data.deliveryCustomizationUpdate.deliveryCustomization,
+  );
+}
+
+const DELIVERY_CUSTOMIZATION_DELETE_MUTATION = `#graphql
+  mutation HikyakuDeliveryCustomizationDelete($id: ID!) {
+    deliveryCustomizationDelete(id: $id) {
+      deletedId
+      userErrors {
+        field
+        message
+      }
+    }
+  }`;
+
+/**
+ * Removes the delivery customization, and with it its metafields. Scope:
+ * `write_delivery_customizations`.
+ */
+export async function deleteDeliveryCustomization(
+  admin: AdminApiContext,
+  id: string,
+): Promise<MutationResult<string>> {
+  const data: {
+    deliveryCustomizationDelete: {
+      deletedId: string | null;
+      userErrors: UserError[];
+    };
+  } = await query(admin, DELIVERY_CUSTOMIZATION_DELETE_MUTATION, { id });
+  return mutationResult(
+    data.deliveryCustomizationDelete,
+    data.deliveryCustomizationDelete.deletedId,
+  );
+}
+
+export interface ShopifyShopInfo {
+  currencyCode: string;
+  plan: {
+    publicDisplayName: string;
+    partnerDevelopment: boolean;
+    shopifyPlus: boolean;
+  };
+}
+
+const SHOP_INFO_QUERY = `#graphql
+  query HikyakuShopInfo {
+    shop {
+      currencyCode
+      plan {
+        publicDisplayName
+        partnerDevelopment
+        shopifyPlus
+      }
+    }
+  }`;
+
+/**
+ * The shop's currency (Hikyaku rates are priced in it) and plan (whether it
+ * can use a carrier service). Scope: none.
+ */
+export async function getShopInfo(
+  admin: AdminApiContext,
+): Promise<ShopifyShopInfo> {
+  const data: { shop: ShopifyShopInfo } = await query(
+    admin,
+    SHOP_INFO_QUERY,
+    {},
+  );
+  return data.shop;
 }

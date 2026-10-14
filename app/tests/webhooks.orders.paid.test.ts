@@ -15,6 +15,9 @@ vi.mock("../lib/hikyaku-api.server", () => ({
   getValidAccessToken: vi.fn(),
   postOrderEvent: vi.fn(),
 }));
+vi.mock("../lib/shipping-rates.server", () => ({
+  rateForwarding: vi.fn(),
+}));
 vi.mock("../lib/shopify-admin.server", () => ({
   adminForShop: vi.fn(),
   getOrderFulfillmentOrders: vi.fn(),
@@ -25,6 +28,7 @@ const { getConnection, getValidAccessToken, postOrderEvent } =
   await import("../lib/hikyaku-api.server");
 const { adminForShop, getOrderFulfillmentOrders } =
   await import("../lib/shopify-admin.server");
+const { rateForwarding } = await import("../lib/shipping-rates.server");
 const { action } = await import("../routes/webhooks.orders.paid");
 
 const SHOP = "example.myshopify.com";
@@ -120,6 +124,10 @@ beforeEach(() => {
     {} as Awaited<ReturnType<typeof adminForShop>>,
   );
   vi.mocked(postOrderEvent).mockResolvedValue({ ok: true });
+  vi.mocked(rateForwarding).mockResolvedValue({
+    enabled: false,
+    staticRates: new Map(),
+  });
 });
 
 describe("orders/paid webhook", () => {
@@ -264,5 +272,84 @@ describe("orders/paid webhook", () => {
     const response = await callAction();
 
     expect(response.status).toBe(500);
+  });
+
+  describe("Hikyaku rates at checkout", () => {
+    const hikyakuLine = {
+      title: "Hikyaku Same Day",
+      code: "hikyaku:svc_1",
+      source: "Hikyaku",
+      carrier_identifier: "abc123",
+      price: "12.50",
+      discounted_price: "12.50",
+      price_set: { shop_money: { amount: "12.50", currency_code: "AUD" } },
+      discounted_price_set: {
+        shop_money: { amount: "12.50", currency_code: "AUD" },
+      },
+    };
+    const otherLine = { title: "Express", code: "Express", price: "9.00" };
+
+    function withShippingLines(shipping_lines: unknown[]) {
+      vi.mocked(authenticate.webhook).mockResolvedValue({
+        shop: SHOP,
+        payload: { ...payload, shipping_lines },
+        webhookId: "webhook-1",
+        apiVersion: "2026-07",
+        topic: "ORDERS_PAID",
+      } as unknown as Awaited<ReturnType<typeof authenticate.webhook>>);
+    }
+
+    beforeEach(() => {
+      vi.mocked(getOrderFulfillmentOrders).mockResolvedValue([
+        fulfillmentOrder(1, 101, [
+          [11, 2],
+          [12, 1],
+        ]),
+      ]);
+    });
+
+    it("rates on: sends an order that chose a Hikyaku rate, with its service and price", async () => {
+      vi.mocked(rateForwarding).mockResolvedValue({
+        enabled: true,
+        staticRates: new Map(),
+      });
+      withShippingLines([hikyakuLine]);
+
+      const response = await callAction();
+
+      expect(response.status).toBe(200);
+      expect(postedEvent().shipping_rate).toEqual({
+        service_id: "svc_1",
+        path: "live",
+        price: "12.50",
+        discounted_price: "12.50",
+        currency: "AUD",
+        title: "Hikyaku Same Day",
+      });
+    });
+
+    it("rates on: skips an order that chose another rate, before reading Shopify", async () => {
+      vi.mocked(rateForwarding).mockResolvedValue({
+        enabled: true,
+        staticRates: new Map(),
+      });
+      withShippingLines([otherLine]);
+
+      const response = await callAction();
+
+      expect(response.status).toBe(200);
+      expect(getOrderFulfillmentOrders).not.toHaveBeenCalled();
+      expect(postOrderEvent).not.toHaveBeenCalled();
+    });
+
+    it("rates off: sends every order, without a shipping rate", async () => {
+      withShippingLines([otherLine]);
+
+      const response = await callAction();
+
+      expect(response.status).toBe(200);
+      // Left out, not null: an older hikyaku-api rejects unknown fields.
+      expect(postedEvent()).not.toHaveProperty("shipping_rate");
+    });
   });
 });

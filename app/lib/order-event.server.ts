@@ -3,6 +3,10 @@
 // one piece of this app worth unit testing once the contract settles.
 
 import type { OrderFulfillmentGroup } from "./fulfillment-groups";
+import type {
+  PayloadShippingLine,
+  ShippingRateChoice,
+} from "./hikyaku-shipping-line";
 
 interface ShopifyLineItem {
   id: number;
@@ -31,10 +35,7 @@ interface ShopifyAddress {
   longitude: number | null;
 }
 
-interface ShopifyShippingLine {
-  title: string;
-  price: string;
-}
+type ShopifyShippingLine = PayloadShippingLine;
 
 interface ShopifyCustomer {
   id: number;
@@ -140,6 +141,14 @@ export interface OrderPaidEvent {
    * warehouse.
    */
   fulfillment_groups: OrderFulfillmentGroup[];
+  /**
+   * The Hikyaku rate the shopper chose at checkout, with what it cost. Set
+   * only when the shop has Hikyaku rates on, which is also the only time an
+   * order is sent with one (see findHikyakuShippingLine); left out
+   * otherwise, so the event stays valid for a hikyaku-api that doesn't know
+   * the field (it rejects unknown properties).
+   */
+  shipping_rate?: ShippingRateChoice;
 }
 
 /**
@@ -211,6 +220,8 @@ export function buildOrderPaidEvent(params: {
   payload: ShopifyOrderPaidPayload;
   /** From buildFulfillmentGroups, over the order's fulfillment orders. */
   fulfillmentGroups: OrderFulfillmentGroup[];
+  /** From findHikyakuShippingLine, when the shop has Hikyaku rates on. */
+  shippingRate?: ShippingRateChoice | null;
 }): OrderPaidEvent {
   const { shop, webhookId, apiVersion, payload, fulfillmentGroups } = params;
   const { shipping_address: address, customer } = payload;
@@ -299,6 +310,7 @@ export function buildOrderPaidEvent(params: {
       instructions: payload.note,
     },
     fulfillment_groups: fulfillmentGroups,
+    ...(params.shippingRate ? { shipping_rate: params.shippingRate } : {}),
   };
 }
 

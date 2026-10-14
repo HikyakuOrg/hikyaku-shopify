@@ -88,3 +88,34 @@ model HikyakuOAuthState {
 
   @@schema("shopify")
 }
+
+// What the app has set up in the shop for Hikyaku rates at checkout (HIK-206).
+// Which services are offered, and their band settings, live in hikyaku-api,
+// which answers the carrier service callback; this row is the Shopify side:
+// whether rates are on, which path the shop is on, and the GIDs of what the
+// app created there, so it can find them again to turn off or remove.
+model ShippingRates {
+  shop                    String   @id
+  // Rates offered at checkout. The orders/paid webhook reads this: with rates
+  // on, only orders that chose a Hikyaku rate are sent to Hikyaku.
+  enabled                 Boolean  @default(false)
+  // "live" (carrier service) or "static" (delivery profile rates filtered by
+  // the delivery customization Function). Null until rates were first set up.
+  path                    String?
+  carrierServiceId        String?
+  deliveryCustomizationId String?
+  // Static path: each Hikyaku method definition's name → its rate code, so
+  // orders/paid can tell which service a static rate was for.
+  staticRates             Json?
+  // The plan and currency the rates were last set up for, so shop/update
+  // only re-checks the path when one of them changed.
+  shopPlan                String?
+  shopCurrency            String?
+  // The last failure setting up or switching the path, shown on the screen
+  // until a later attempt succeeds. Null when everything is in place.
+  error                   String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@schema("shopify")
+}

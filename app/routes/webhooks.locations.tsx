@@ -10,6 +10,11 @@ import {
 interface LocationPayload {
   admin_graphql_api_id?: string;
   name?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  province_code?: string | null;
+  zip?: string | null;
   country_code?: string | null;
 }
 
@@ -19,10 +24,10 @@ const UPSERT_TIMEOUT_MS = 4000;
 
 // locations/create, locations/update, locations/activate and
 // locations/deactivate all carry the full location, so they share one
-// behaviour: upsert its name and country to hikyaku-api without a mode. A new
-// location arrives `unmapped`; an existing one keeps whatever the merchant
-// mapped it to. The payload already has everything sent, so there is no Admin
-// API call here. authenticate.webhook throws a 401 on a bad HMAC.
+// behaviour: upsert its name, country and address to hikyaku-api without a
+// mode. A new location arrives `unmapped`; an existing one keeps whatever the
+// merchant mapped it to. The payload already has everything sent, so there is
+// no Admin API call here. authenticate.webhook throws a 401 on a bad HMAC.
 //
 // The response status follows the orders/paid retry contract (see
 // postOrderEvent in hikyaku-api.server.ts): 500 asks Shopify to retry
@@ -50,6 +55,9 @@ export async function action({ request }: ActionFunctionArgs) {
     return new Response();
   }
 
+  const countryCode = location.country_code
+    ? location.country_code.toUpperCase()
+    : null;
   const result = await upsertIntegrationLocations(
     accessToken,
     connection.organisationSlug,
@@ -58,9 +66,15 @@ export async function action({ request }: ActionFunctionArgs) {
       {
         external_location_id: locationId,
         external_location_name: location.name ?? null,
-        country_code: location.country_code
-          ? location.country_code.toUpperCase()
-          : null,
+        country_code: countryCode,
+        address: {
+          address1: location.address1 ?? null,
+          address2: location.address2 ?? null,
+          city: location.city ?? null,
+          province_code: location.province_code ?? null,
+          zip: location.zip ?? null,
+          country_code: countryCode,
+        },
       },
     ],
     { timeoutMs: UPSERT_TIMEOUT_MS },
