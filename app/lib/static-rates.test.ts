@@ -5,8 +5,10 @@ import {
   functionRates,
   methodName,
   planProfileUpdates,
+  splitProfileUpdate,
   staticRateCodes,
   toGrams,
+  zoneCapacityErrors,
   type CurrentMethod,
   type CurrentProfile,
   type StaticPlan,
@@ -480,6 +482,107 @@ describe("planProfileUpdates", () => {
       {
         criteria: { value: 5000, unit: "GRAMS" },
         operator: "LESS_THAN_OR_EQUAL_TO",
+      },
+    ]);
+  });
+});
+
+describe("zoneCapacityErrors", () => {
+  const mapped = [{ id: AU_LOCATION, countryCode: "AU" }];
+  const bands = (n: number) =>
+    desiredMethods({
+      ...plan,
+      rates: Array.from({ length: n }, (_, i) =>
+        distance(i, i + 1, String(5 + i)),
+      ),
+    });
+  const domestic = (methods: CurrentMethod[]) => [
+    profile([
+      {
+        id: "group1",
+        locationIds: [AU_LOCATION],
+        zones: [
+          {
+            id: "zoneAU",
+            name: "Domestic",
+            countries: [{ code: "AU", restOfWorld: false }],
+            methods,
+          },
+        ],
+      },
+    ]),
+  ];
+  const merchant = [
+    current("Standard", { id: "gid://shopify/DeliveryMethodDefinition/1" }),
+    // Standard's free-over-a-price variant: the same method to Shopify.
+    current("Standard", {
+      id: "gid://shopify/DeliveryMethodDefinition/1?source=RateRangeCondition&source_id=9",
+    }),
+    current("Express", { id: "gid://shopify/DeliveryMethodDefinition/2" }),
+  ];
+
+  it("fits up to 250 with the merchant's own, counting a price-range variant once", () => {
+    expect(zoneCapacityErrors(domestic(merchant), mapped, bands(248))).toEqual(
+      [],
+    );
+  });
+
+  it("names the zone that would go over, ignoring Hikyaku methods already there", () => {
+    const ours = bands(249).map((m, i) =>
+      current(m.name, { id: `gid://shopify/DeliveryMethodDefinition/o${i}` }),
+    );
+    expect(
+      zoneCapacityErrors(domestic([...merchant, ...ours]), mapped, bands(249)),
+    ).toEqual([
+      `The "Domestic" zone of the "General" shipping profile holds at most 250 rates: it has 2 of the store's own and Hikyaku needs 249. Offer fewer services or bands.`,
+    ]);
+  });
+
+  it("checks a zone the app would create", () => {
+    const errors = zoneCapacityErrors(
+      [profile([{ id: "group1", locationIds: [AU_LOCATION], zones: [] }])],
+      mapped,
+      bands(251),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/needs 251/);
+  });
+
+  it("has nothing to check when removing", () => {
+    expect(zoneCapacityErrors(domestic(merchant), mapped, [])).toEqual([]);
+  });
+});
+
+describe("splitProfileUpdate", () => {
+  const ids = (n: number, prefix = "m") =>
+    Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+  const update = (input: object) => ({
+    profileId: "p",
+    profileName: "General",
+    input,
+  });
+
+  it("leaves an update within Shopify's list limit alone", () => {
+    const u = update({ methodDefinitionsToDelete: ids(250) });
+    expect(splitProfileUpdate(u)).toEqual([u]);
+  });
+
+  it("sends deletes past 250 first, in updates of their own", () => {
+    const groups = [{ id: "g", zonesToUpdate: [{ id: "z" }] }];
+    const parts = splitProfileUpdate(
+      update({
+        locationGroupsToUpdate: groups,
+        methodDefinitionsToDelete: ids(600),
+        zonesToDelete: ids(2, "z"),
+      }),
+    );
+    expect(parts.map((p) => p.input)).toEqual([
+      { methodDefinitionsToDelete: ids(600).slice(250, 500) },
+      { methodDefinitionsToDelete: ids(600).slice(500) },
+      {
+        locationGroupsToUpdate: groups,
+        methodDefinitionsToDelete: ids(250),
+        zonesToDelete: ids(2, "z"),
       },
     ]);
   });

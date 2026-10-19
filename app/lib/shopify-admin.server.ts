@@ -975,12 +975,40 @@ const DELIVERY_PROFILE_GROUPS_QUERY = `#graphql
     }
   }`;
 
-// Zones come a few at a time: each carries up to 100 method definitions, and
-// Shopify rejects a query costing over 1000 points.
+const METHOD_DEFINITION_FIELDS = `#graphql
+  fragment HikyakuMethodDefinition on DeliveryMethodDefinition {
+    id
+    name
+    description
+    active
+    rateProvider {
+      ... on DeliveryRateDefinition {
+        price {
+          amount
+          currencyCode
+        }
+      }
+    }
+    methodConditions {
+      field
+      operator
+      conditionCriteria {
+        ... on Weight {
+          unit
+          value
+        }
+      }
+    }
+  }`;
+
+// Zones come a few at a time, each with its first 100 method definitions:
+// Shopify rejects a query costing over 1000 points. A zone holds up to 250, so
+// the rest of a full zone's come in follow-up queries for that zone alone.
 const ZONE_PAGE_SIZE = 5;
 const METHOD_PAGE_SIZE = 100;
 
 const DELIVERY_GROUP_ZONES_QUERY = `#graphql
+  ${METHOD_DEFINITION_FIELDS}
   query HikyakuDeliveryGroupZones(
     $id: ID!
     $groupId: ID!
@@ -991,50 +1019,66 @@ const DELIVERY_GROUP_ZONES_QUERY = `#graphql
     deliveryProfile(id: $id) {
       profileLocationGroups(locationGroupId: $groupId) {
         locationGroupZones(first: $first, after: $after) {
-          nodes {
-            zone {
-              id
-              name
-              countries {
-                code {
-                  countryCode
-                  restOfWorld
-                }
-              }
-            }
-            methodDefinitions(first: $methodsFirst, type: MERCHANT) {
-              nodes {
+          edges {
+            cursor
+            node {
+              zone {
                 id
                 name
-                description
-                active
-                rateProvider {
-                  ... on DeliveryRateDefinition {
-                    price {
-                      amount
-                      currencyCode
-                    }
-                  }
-                }
-                methodConditions {
-                  field
-                  operator
-                  conditionCriteria {
-                    ... on Weight {
-                      unit
-                      value
-                    }
+                countries {
+                  code {
+                    countryCode
+                    restOfWorld
                   }
                 }
               }
-              pageInfo {
-                hasNextPage
+              methodDefinitions(first: $methodsFirst, type: MERCHANT) {
+                nodes {
+                  ...HikyakuMethodDefinition
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
               }
             }
           }
           pageInfo {
             hasNextPage
             endCursor
+          }
+        }
+      }
+    }
+  }`;
+
+// One zone (the one after `zoneAfter`, the previous zone's cursor) and the
+// next page of its method definitions.
+const DELIVERY_ZONE_METHODS_QUERY = `#graphql
+  ${METHOD_DEFINITION_FIELDS}
+  query HikyakuDeliveryZoneMethods(
+    $id: ID!
+    $groupId: ID!
+    $zoneAfter: String
+    $first: Int!
+    $after: String
+  ) {
+    deliveryProfile(id: $id) {
+      profileLocationGroups(locationGroupId: $groupId) {
+        locationGroupZones(first: 1, after: $zoneAfter) {
+          nodes {
+            zone {
+              id
+            }
+            methodDefinitions(first: $first, after: $after, type: MERCHANT) {
+              nodes {
+                ...HikyakuMethodDefinition
+              }
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+            }
           }
         }
       }
@@ -1062,10 +1106,7 @@ interface RawGroupZone {
       code: { countryCode: string | null; restOfWorld: boolean };
     }>;
   };
-  methodDefinitions: {
-    nodes: RawMethodDefinition[];
-    pageInfo: { hasNextPage: boolean };
-  };
+  methodDefinitions: Connection<RawMethodDefinition>;
 }
 
 function currentMethod(raw: RawMethodDefinition): CurrentMethod {
@@ -1151,7 +1192,10 @@ async function listGroupZones(
     const data: {
       deliveryProfile: {
         profileLocationGroups: Array<{
-          locationGroupZones: Connection<RawGroupZone>;
+          locationGroupZones: {
+            edges: Array<{ cursor: string; node: RawGroupZone }>;
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
         }>;
       } | null;
     } = await query(admin, DELIVERY_GROUP_ZONES_QUERY, {
@@ -1164,11 +1208,19 @@ async function listGroupZones(
     const page =
       data.deliveryProfile?.profileLocationGroups[0]?.locationGroupZones;
     if (!page) break;
-    for (const node of page.nodes) {
-      if (node.methodDefinitions.pageInfo.hasNextPage) {
-        console.warn(
-          `Delivery zone ${node.zone.id} has more than ${METHOD_PAGE_SIZE} method definitions; only the first ${METHOD_PAGE_SIZE} are considered`,
-        );
+    // The cursor before each zone, to ask for that zone alone.
+    let zoneAfter = after;
+    for (const { cursor, node } of page.edges) {
+      const methods = node.methodDefinitions.nodes.map(currentMethod);
+      let methodPage = node.methodDefinitions.pageInfo;
+      while (methodPage.hasNextPage) {
+        const more = await listZoneMethods(admin, profileId, groupId, {
+          zoneAfter,
+          zoneId: node.zone.id,
+          after: methodPage.endCursor,
+        });
+        methods.push(...more.nodes.map(currentMethod));
+        methodPage = more.pageInfo;
       }
       zones.push({
         id: node.zone.id,
@@ -1177,12 +1229,49 @@ async function listGroupZones(
           code: country.code.countryCode,
           restOfWorld: country.code.restOfWorld,
         })),
-        methods: node.methodDefinitions.nodes.map(currentMethod),
+        methods,
       });
+      zoneAfter = cursor;
     }
     after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
   } while (after);
   return zones;
+}
+
+async function listZoneMethods(
+  admin: AdminApiContext,
+  profileId: string,
+  groupId: string,
+  page: { zoneAfter: string | null; zoneId: string; after: string | null },
+): Promise<Connection<RawMethodDefinition>> {
+  const data: {
+    deliveryProfile: {
+      profileLocationGroups: Array<{
+        locationGroupZones: {
+          nodes: Array<{
+            zone: { id: string };
+            methodDefinitions: Connection<RawMethodDefinition>;
+          }>;
+        };
+      }>;
+    } | null;
+  } = await query(admin, DELIVERY_ZONE_METHODS_QUERY, {
+    id: profileId,
+    groupId,
+    zoneAfter: page.zoneAfter,
+    first: METHOD_PAGE_SIZE,
+    after: page.after,
+  });
+  const zone =
+    data.deliveryProfile?.profileLocationGroups[0]?.locationGroupZones.nodes[0];
+  // A zone added or removed meanwhile shifts the cursors: better to fail the
+  // sync than to diff against another zone's methods.
+  if (zone?.zone.id !== page.zoneId) {
+    throw new Error(
+      `the shipping zones changed while reading delivery zone ${page.zoneId}`,
+    );
+  }
+  return zone.methodDefinitions;
 }
 
 const DELIVERY_PROFILE_UPDATE_MUTATION = `#graphql

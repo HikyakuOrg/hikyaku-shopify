@@ -141,6 +141,24 @@ describe("describeSettingsError", () => {
     ).toBe("Standard has no price in AUD. Add one in the Hikyaku dashboard.");
   });
 
+  it("shows hikyaku-api's sentence for too many static rates", () => {
+    expect(
+      describeSettingsError(
+        {
+          status: 422,
+          code: "too_many_rates",
+          serviceIds: ["km"],
+          detail:
+            "HTTP 422: These services make 230 checkout rates, and Shopify has room for 200. Use wider bands, a lower maximum or fewer services.",
+        },
+        services,
+        "AUD",
+      ),
+    ).toBe(
+      "These services make 230 checkout rates, and Shopify has room for 200. Use wider bands, a lower maximum or fewer services.",
+    );
+  });
+
   it("explains a shop held by another organisation", () => {
     expect(
       describeSettingsError(

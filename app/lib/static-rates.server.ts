@@ -11,11 +11,14 @@ import {
   desiredMethods,
   functionRates,
   planProfileUpdates,
+  splitProfileUpdate,
+  zoneCapacityErrors,
   staticRateCodes,
   type CurrentProfile,
   type MappedLocation,
   type ProfileUpdate,
 } from "./static-rates";
+import { tooManyRatesMessage } from "./shipping-rates-form";
 import {
   FUNCTION_METAFIELD_NAMESPACE,
   createDeliveryCustomization,
@@ -59,7 +62,7 @@ async function applyUpdates(
   errors: string[],
 ): Promise<number> {
   let mutations = 0;
-  for (const update of updates) {
+  for (const update of updates.flatMap(splitProfileUpdate)) {
     const result = await updateDeliveryProfile(
       admin,
       update.profileId,
@@ -157,7 +160,13 @@ export async function syncStaticRates(
     access.organisationSlug,
     shop,
   );
-  if (!plan.ok) return fail(describeFailure(plan, "read the Hikyaku rates"));
+  if (!plan.ok) {
+    return fail(
+      plan.code === "too_many_rates"
+        ? tooManyRatesMessage(plan.detail)
+        : describeFailure(plan, "read the Hikyaku rates"),
+    );
+  }
 
   const coverage = JSON.stringify(plan.data.coverage);
   const rates = JSON.stringify(functionRates(plan.data));
@@ -181,13 +190,12 @@ export async function syncStaticRates(
   } catch (error) {
     return fail(`Couldn't read the shipping profiles (${message(error)}).`);
   }
+  const desired = desiredMethods(plan.data);
+  const tooMany = zoneCapacityErrors(profiles, locations.locations, desired);
+  if (tooMany.length > 0) return fail(tooMany.join(" "));
   let mutations = await applyUpdates(
     admin,
-    planProfileUpdates(
-      profiles,
-      locations.locations,
-      desiredMethods(plan.data),
-    ),
+    planProfileUpdates(profiles, locations.locations, desired),
     errors,
   );
 

@@ -146,6 +146,14 @@ export function parseSettingsForm(
   return { ok: true, enabled, serviceIds, bandSettings };
 }
 
+/** Too many static rates for a Shopify zone, as hikyaku-api says it. */
+export function tooManyRatesMessage(detail: string): string {
+  return (
+    /^HTTP \d+: (.+)$/.exec(detail)?.[1] ??
+    "These services make more checkout rates than Shopify has room for. Use wider bands, a lower maximum or fewer services."
+  );
+}
+
 /** A failed save as a sentence for the merchant, from hikyaku-api's 422 code. */
 export function describeSettingsError(
   failure: {
@@ -171,6 +179,8 @@ export function describeSettingsError(
       return `${names || "A chosen service"} is no longer in your Hikyaku catalog. Reload the page.`;
     case "band_settings_invalid":
       return `Check the band settings of ${names || "your distance and weight services"}.`;
+    case "too_many_rates":
+      return tooManyRatesMessage(failure.detail);
   }
   if (failure.status === 409) {
     return "This store is connected to another Hikyaku organisation's rates. Disconnect it there first.";
