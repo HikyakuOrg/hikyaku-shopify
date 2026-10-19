@@ -272,6 +272,36 @@ export function zoneName(countryCode: string): string {
 }
 
 /**
+ * The zones of a location group that get the Hikyaku rates: per country of a
+ * mapped location in it, the zone listing the country, else the group's Rest
+ * of World zone. Countries neither covers get a zone of their own.
+ */
+function groupTargets(
+  group: CurrentLocationGroup,
+  countryOf: ReadonlyMap<string, string>,
+): { targets: Set<string>; newCountries: string[] } {
+  const countries = new Set<string>();
+  for (const id of group.locationIds) {
+    const country = countryOf.get(id);
+    if (country) countries.add(country);
+  }
+  const targets = new Set<string>();
+  const newCountries: string[] = [];
+  for (const country of [...countries].sort()) {
+    const zone =
+      group.zones.find((candidate) =>
+        candidate.countries.some((c) => c.code === country),
+      ) ??
+      group.zones.find((candidate) =>
+        candidate.countries.some((c) => c.restOfWorld),
+      );
+    if (zone) targets.add(zone.id);
+    else newCountries.push(country);
+  }
+  return { targets, newCountries };
+}
+
+/**
  * The changes to each delivery profile so Hikyaku rates are offered from
  * every location group that ships from a mapped location, and nowhere else.
  *
@@ -302,36 +332,15 @@ export function planProfileUpdates(
     const zonesToDelete: string[] = [];
 
     for (const group of profile.groups) {
-      const countries = new Set<string>();
-      if (desired.length > 0) {
-        for (const id of group.locationIds) {
-          const country = countryOf.get(id);
-          if (country) countries.add(country);
-        }
-      }
-
-      const targets = new Set<string>();
-      const zonesToCreate: ZoneInput[] = [];
-      for (const country of [...countries].sort()) {
-        const zone =
-          group.zones.find((candidate) =>
-            candidate.countries.some((c) => c.code === country),
-          ) ??
-          group.zones.find((candidate) =>
-            candidate.countries.some((c) => c.restOfWorld),
-          );
-        if (zone) {
-          targets.add(zone.id);
-        } else {
-          zonesToCreate.push({
-            name: zoneName(country),
-            countries: [{ code: country, includeAllProvinces: true }],
-            methodDefinitionsToCreate: desired.map((method) =>
-              methodInput(method),
-            ),
-          });
-        }
-      }
+      const { targets, newCountries } =
+        desired.length > 0
+          ? groupTargets(group, countryOf)
+          : { targets: new Set<string>(), newCountries: [] };
+      const zonesToCreate: ZoneInput[] = newCountries.map((country) => ({
+        name: zoneName(country),
+        countries: [{ code: country, includeAllProvinces: true }],
+        methodDefinitionsToCreate: desired.map((method) => methodInput(method)),
+      }));
 
       const zonesToUpdate: ZoneInput[] = [];
       for (const zone of group.zones) {
@@ -382,6 +391,89 @@ export function planProfileUpdates(
     }
   }
   return updates;
+}
+
+/**
+ * Shopify refuses a deliveryProfileUpdate that would leave a zone with more
+ * method definitions than this, the merchant's own included (measured on
+ * 2026-07, HIK-207). A price-range variant of a method doesn't count.
+ */
+export const ZONE_METHOD_LIMIT = 250;
+
+/** Shopify refuses any input list longer than this (MAX_INPUT_SIZE_EXCEEDED). */
+export const INPUT_LIST_LIMIT = 250;
+
+/**
+ * Why the Hikyaku rates don't fit in a zone they'd be written to, one
+ * sentence per zone. Empty when they fit everywhere. Checked before writing
+ * anything, since Shopify refuses the whole profile's update otherwise.
+ */
+export function zoneCapacityErrors(
+  profiles: CurrentProfile[],
+  mappedLocations: MappedLocation[],
+  desired: DesiredMethod[],
+): string[] {
+  if (desired.length === 0) return [];
+  const countryOf = new Map(
+    mappedLocations.map((location) => [location.id, location.countryCode]),
+  );
+  const errors: string[] = [];
+  for (const profile of profiles) {
+    for (const group of profile.groups) {
+      const { targets, newCountries } = groupTargets(group, countryOf);
+      for (const zone of group.zones) {
+        if (!targets.has(zone.id)) continue;
+        // A price-range variant has its method's id plus "?source=…".
+        const merchant = new Set(
+          zone.methods
+            .filter((method) => !isOwnName(method.name))
+            .map((method) => method.id.split("?")[0]),
+        ).size;
+        if (merchant + desired.length > ZONE_METHOD_LIMIT) {
+          errors.push(
+            `The "${zone.name}" zone of the "${profile.name}" shipping profile holds at most ${ZONE_METHOD_LIMIT} rates: it has ${merchant} of the store's own and Hikyaku needs ${desired.length}. Offer fewer services or bands.`,
+          );
+        }
+      }
+      if (newCountries.length > 0 && desired.length > ZONE_METHOD_LIMIT) {
+        errors.push(
+          `A shipping zone holds at most ${ZONE_METHOD_LIMIT} rates and Hikyaku needs ${desired.length}. Offer fewer services or bands.`,
+        );
+      }
+    }
+  }
+  return [...new Set(errors)];
+}
+
+/**
+ * Splits an update whose delete lists are longer than Shopify takes. The
+ * extra deletes go first, in updates of their own, so a zone has room for
+ * what the main update creates.
+ */
+export function splitProfileUpdate(update: ProfileUpdate): ProfileUpdate[] {
+  const methods = update.input.methodDefinitionsToDelete ?? [];
+  const zones = update.input.zonesToDelete ?? [];
+  const extra: ProfileUpdate[] = [];
+  const chunk = (
+    ids: string[],
+    key: "methodDefinitionsToDelete" | "zonesToDelete",
+  ) => {
+    for (let i = INPUT_LIST_LIMIT; i < ids.length; i += INPUT_LIST_LIMIT) {
+      extra.push({
+        ...update,
+        input: { [key]: ids.slice(i, i + INPUT_LIST_LIMIT) },
+      });
+    }
+  };
+  chunk(methods, "methodDefinitionsToDelete");
+  chunk(zones, "zonesToDelete");
+  if (extra.length === 0) return [update];
+  const input: ProfileInput = { ...update.input };
+  if (methods.length > 0) {
+    input.methodDefinitionsToDelete = methods.slice(0, INPUT_LIST_LIMIT);
+  }
+  if (zones.length > 0) input.zonesToDelete = zones.slice(0, INPUT_LIST_LIMIT);
+  return [...extra, { ...update, input }];
 }
 
 /** Converts a Shopify weight to grams. */

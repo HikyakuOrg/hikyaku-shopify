@@ -223,6 +223,60 @@ describe("applyRates", () => {
     expect(steps).toEqual(["carrier removed", "static written"]);
   });
 
+  it("Grow without the add-on, as Shopify answers: registered off, refused on, so static", async () => {
+    shopOn("Grow");
+    stored({ enabled: true, path: "static", shopPlan: "Grow" });
+    apiSettings("static");
+    vi.mocked(carrier.ensureCarrierService).mockImplementation(
+      async (_admin, _shop, { active }) => {
+        steps.push(`carrier ${active ? "on" : "registered off"}`);
+        return active
+          ? {
+              ok: false,
+              errors: [
+                "Carrier Calculated Shipping must be enabled for your store before enabling: Hikyaku",
+              ],
+            }
+          : { ok: true, data: { ...CARRIER, active: false } };
+      },
+    );
+
+    const result = await applyRates(ADMIN, SHOP, { enabled: true });
+
+    expect(result).toMatchObject({ ok: true, path: "static" });
+    expect(result.reason).toMatch(/didn't allow it/);
+    expect(steps).toEqual([
+      "carrier registered off",
+      "static removed",
+      "carrier on",
+      "carrier removed",
+      "static written",
+    ]);
+  });
+
+  it("reconciling doesn't probe again a plan Shopify refused, so static rates stay up", async () => {
+    shopOn("Grow");
+    stored({ enabled: true, path: "static", shopPlan: "Grow" });
+    apiSettings("static");
+
+    const result = await reconcileRates(ADMIN, SHOP);
+
+    expect(result).toMatchObject({ ok: true, path: "static" });
+    expect(result?.reason).toMatch(/didn't allow it/);
+    expect(staticRates.removeStaticRates).not.toHaveBeenCalled();
+    expect(steps).toEqual(["carrier removed", "static written"]);
+  });
+
+  it("reconciling probes again once the plan changed", async () => {
+    shopOn("Grow");
+    stored({ enabled: true, path: "static", shopPlan: "Basic" });
+    apiSettings("static");
+
+    const result = await reconcileRates(ADMIN, SHOP);
+
+    expect(result?.path).toBe("live");
+  });
+
   it("Grow with the add-on: live", async () => {
     shopOn("Grow");
     stored(null);

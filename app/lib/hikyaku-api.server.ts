@@ -554,9 +554,9 @@ export async function fetchShippingRates(
 /**
  * Saves the shop's rate settings. A 422 carries a `code`
  * (stripe_not_connected, no_services, service_missing_currency,
- * unknown_service, band_settings_invalid) and the `serviceIds` it's about; a
- * 409 means another organisation holds the shop. Needs
- * `integrations.shipping_rates.write`.
+ * unknown_service, band_settings_invalid, too_many_rates) and the
+ * `serviceIds` it's about; a 409 means another organisation holds the shop.
+ * Needs `integrations.shipping_rates.write`.
  */
 export async function saveShippingRates(
   accessToken: string,

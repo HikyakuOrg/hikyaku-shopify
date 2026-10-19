@@ -11,6 +11,7 @@ import {
   removeCarrierService,
 } from "./carrier-service.server";
 import { capabilityFromPlan, type RatePath } from "./rate-path";
+import { tooManyRatesMessage } from "./shipping-rates-form";
 import { removeHikyakuRates } from "./shipping-rates.server";
 import { removeStaticRates, syncStaticRates } from "./static-rates.server";
 import { getCarrierService, getShopInfo } from "./shopify-admin.server";
@@ -76,6 +77,9 @@ async function syncApiSettings(
   if (saved.code === "band_settings_invalid") {
     return "This store's plan needs fixed-price rates: set the band sizes on the Shipping rates screen.";
   }
+  if (saved.code === "too_many_rates") {
+    return tooManyRatesMessage(saved.detail);
+  }
   if (saved.code === "service_missing_currency") {
     return `A chosen service has no price in ${currency}. Add one in the Hikyaku dashboard.`;
   }
@@ -89,7 +93,16 @@ async function syncApiSettings(
 export async function applyRates(
   admin: AdminApiContext,
   shop: string,
-  options: { enabled: boolean },
+  options: {
+    enabled: boolean;
+    /**
+     * Probe again on a plan where Shopify already refused the carrier
+     * service. Off for reconciling: a probe takes the static rates down
+     * before Shopify refuses (it accepts the carrier service switched off and
+     * refuses switching it on), so each one leaves a gap at checkout.
+     */
+    reprobe?: boolean;
+  },
 ): Promise<ApplyRatesResult> {
   const state = await prisma.shippingRates.findUnique({ where: { shop } });
 
@@ -133,6 +146,21 @@ export async function applyRates(
           "Shopify switched off carrier-calculated shipping for this store's plan",
       };
     }
+  }
+
+  // A probe Shopify refused stays refused until the plan changes (shop/update
+  // reconciles then) or the merchant saves again (an add-on bought on the
+  // same plan).
+  if (
+    capability.path === "probe" &&
+    options.reprobe === false &&
+    state?.path === "static" &&
+    state.shopPlan === info.plan.publicDisplayName
+  ) {
+    capability = {
+      path: "static",
+      reason: `${capability.reason}, and Shopify didn't allow it for this store`,
+    };
   }
 
   const errors: string[] = [];
@@ -243,5 +271,5 @@ export async function reconcileRates(
     select: { enabled: true },
   });
   if (!state?.enabled) return null;
-  return applyRates(admin, shop, { enabled: true });
+  return applyRates(admin, shop, { enabled: true, reprobe: false });
 }
