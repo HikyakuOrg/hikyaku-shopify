@@ -41,7 +41,8 @@ api_version = "2026-07"
   topics = [ "app/scopes_update" ]
 
   # The core integration: a paid order is a completed purchase. See
-  # docs/BACKEND_HANDOFF.md for the payload this fans out to Hikyaku's API.
+  # hikyaku-api's Swagger docs (https://api.hikyaku.org/api-docs) for the
+  # payload this fans out to Hikyaku's API.
   [[webhooks.subscriptions]]
   uri = "/webhooks/orders/paid"
   topics = [ "orders/paid" ]
