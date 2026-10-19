@@ -1,5 +1,6 @@
 // Transforms Shopify's REST-shaped orders/paid webhook payload into the JSON
-// contract documented in docs/BACKEND_HANDOFF.md. Pure function, no I/O — the
+// contract in hikyaku-api's Swagger docs (https://api.hikyaku.org/api-docs,
+// POST /api/v1/integrations/orders). Pure function, no I/O — the
 // one piece of this app worth unit testing once the contract settles.
 
 import type { OrderFulfillmentGroup } from "./fulfillment-groups";
@@ -302,8 +303,7 @@ export function buildOrderPaidEvent(params: {
           }
         : null,
       // Shopify essentially never geocodes shipping addresses — this is
-      // almost always null. Geocoding is the backend's job; see the handoff
-      // doc.
+      // almost always null. Geocoding is the backend's job.
       latitude: address?.latitude ?? null,
       longitude: address?.longitude ?? null,
       shipping_method: payload.shipping_lines[0]?.title ?? null,

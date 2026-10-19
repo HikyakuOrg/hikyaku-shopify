@@ -199,8 +199,8 @@ export type OrderEventResult =
 /**
  * POSTs an order event (order.paid, order.fulfillment_updated) to Hikyaku's
  * backend. Its event id is the Idempotency-Key. The response mapping here
- * is the reliability contract with Shopify's webhook retrier — see
- * docs/BACKEND_HANDOFF.md:
+ * is the reliability contract with Shopify's webhook retrier (hikyaku-api's
+ * statuses are in its Swagger docs, https://api.hikyaku.org/api-docs):
  *   2xx / 409 (already processed) -> ok            (200 back to Shopify)
  *   4xx (bad request/auth/org)    -> retry: false   (200 back — retrying won't help)
  *   5xx / network error / timeout -> retry: true    (500 back — ask Shopify to retry)

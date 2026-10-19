@@ -27,8 +27,8 @@ import {
 const FULFILLMENT_ORDERS_TIMEOUT_MS = 1000;
 
 // The core integration. Response status is the reliability contract with
-// Shopify's webhook retrier — see docs/BACKEND_HANDOFF.md and
-// hikyaku-api.server.ts's postOrderEvent for the full mapping. Shopify gives
+// Shopify's webhook retrier — see hikyaku-api.server.ts's postOrderEvent for
+// the full mapping. Shopify gives
 // us a 5-second budget end to end, so every branch here returns fast.
 export async function action({ request }: ActionFunctionArgs) {
   const { shop, payload, webhookId, apiVersion } =
